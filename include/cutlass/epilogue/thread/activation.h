@@ -47,6 +47,7 @@ namespace thread {
 
 template <typename T>
 struct Identity {
+  static const bool kIsHeavy=false;
   CUTLASS_HOST_DEVICE
   T operator()(T value) const {
     return value;
@@ -219,7 +220,7 @@ struct HardSwish<Array<half_t, N> > {
     maximum<Array<T, N> > mx;
     multiplies<Array<T, N> > mul;
     plus<Array<T, N> > add;
- 
+
     return mul(mul(mn(mx(add(rhs, T(3)), T(0)), T(6)), rhs), T(0.16666667f));
   }
 };

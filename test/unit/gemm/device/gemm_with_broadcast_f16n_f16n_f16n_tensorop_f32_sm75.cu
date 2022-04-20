@@ -72,11 +72,11 @@ struct GemmWithBiasReluReferenceOp {
   GemmWithBiasReluReferenceOp() { }
 
   void operator()(ElementZ &Z, ElementT &T, ElementCompute gemm, ElementCompute bias) {
-    
+
     ElementCompute kThreshold = ElementCompute();
 
     ElementCompute z_full = binary_op(gemm, bias);
-    
+
     bool conditional = (z_full >= kThreshold);
 
     if (!conditional) {
@@ -95,7 +95,7 @@ struct GemmWithBiasReluReferenceOp {
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 TEST(SM75_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32_64x64x8) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasElementwise<
     cutlass::half_t,
     float,
@@ -106,7 +106,7 @@ TEST(SM75_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32
     cutlass::epilogue::thread::GELU_taylor<float>
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -131,7 +131,7 @@ TEST(SM75_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 TEST(SM70_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32_64x64x8) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasElementwise<
     cutlass::half_t,
     float,
@@ -142,7 +142,7 @@ TEST(SM70_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32
     cutlass::epilogue::thread::GELU_taylor<float>
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -168,7 +168,7 @@ TEST(SM70_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 TEST(SM75_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32_64x64x8) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasRelu<
     cutlass::half_t,
     float,
@@ -178,7 +178,7 @@ TEST(SM75_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32
     true
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -203,7 +203,7 @@ TEST(SM75_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 TEST(SM70_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32_64x64x8) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasRelu<
     cutlass::half_t,
     float,
@@ -213,7 +213,7 @@ TEST(SM70_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32
     true
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -246,7 +246,7 @@ TEST(SM70_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128x32
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32x5_64x64x32_16x8x16) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasElementwise<
     cutlass::half_t,
     float,
@@ -257,7 +257,7 @@ TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
     cutlass::epilogue::thread::GELU_taylor<float>
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -280,7 +280,7 @@ TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
 }
 
 TEST(SM80_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32x5_64x64x32_16x8x16) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasRelu<
     cutlass::half_t,
     float,
@@ -290,7 +290,7 @@ TEST(SM80_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
     true
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -315,7 +315,7 @@ TEST(SM80_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32x4_64x64x32_16x8x16) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasElementwise<
     cutlass::half_t,
     float,
@@ -326,7 +326,7 @@ TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
     cutlass::epilogue::thread::GELU_taylor<float>
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -349,7 +349,7 @@ TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
 }
 
 TEST(SM80_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32x4_64x64x32_16x8x16) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasRelu<
     cutlass::half_t,
     float,
@@ -359,7 +359,7 @@ TEST(SM80_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
     true
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -385,7 +385,7 @@ TEST(SM80_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32x3_64x64x32_16x8x16) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasElementwise<
     cutlass::half_t,
     float,
@@ -396,7 +396,7 @@ TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
     cutlass::epilogue::thread::GELU_taylor<float>
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand
@@ -419,7 +419,7 @@ TEST(SM80_Device_GemmWithBroadcast_GELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
 }
 
 TEST(SM80_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32x3_64x64x32_16x8x16) {
-  
+
   using EpilogueOutputOp = cutlass::epilogue::thread::LinearCombinationBiasRelu<
     cutlass::half_t,
     float,
@@ -429,7 +429,7 @@ TEST(SM80_Device_GemmWithBroadcast_RELU_f16n_f16n_f16n_tensor_op_f32, 128x128_32
     true
   >;
 
-  using GemmKernel = 
+  using GemmKernel =
     typename cutlass::gemm::kernel::DefaultGemmWithBroadcast<
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed B operand
       cutlass::half_t, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,    // transposed A operand

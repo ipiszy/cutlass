@@ -31,6 +31,7 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/numeric_types.h"
 #include "cutlass/arch/arch.h"
+#include "cutlass/epilogue/thread/linear_combination_bias_elementwise.h"
 #include "cutlass/device_kernel.h"
 
 #include "cutlass/gemm/gemm.h"
@@ -38,6 +39,7 @@
 #include "cutlass/gemm/kernel/gemm_universal.h"
 
 #include "cutlass/gemm/kernel/default_gemm_universal.h"
+#include "cutlass/gemm/kernel/default_gemm_with_broadcast.h"
 #include "cutlass/gemm/device/default_gemm_configuration.h"
 #include "cutlass/gemm/device/gemm_universal_base.h"
 
@@ -50,8 +52,8 @@ namespace device {
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 /*!
-  The universal GEMM accommodates serial reductions, parallel reductions, batched strided, and
-  batched array variants.
+  The universal GEMM with a broadcast epilogue.
+  Supports
 */
 template <
     /// Element type for A matrix operand
@@ -86,10 +88,10 @@ template <
     typename InstructionShape_ = typename DefaultGemmConfiguration<
         OperatorClass_, ArchTag_, ElementA_, ElementB_, ElementC_,
         ElementAccumulator_>::InstructionShape,
-    /// Epilogue output operator
-    typename EpilogueOutputOp_ = typename DefaultGemmConfiguration<
-        OperatorClass_, ArchTag_, ElementA_, ElementB_, ElementC_,
-        ElementAccumulator_>::EpilogueOutputOp,
+    /// Epilogue output operator      - must satisfy concept of 'EpilogueWithBroadcastOp'
+    typename EpilogueOutputOp_ = cutlass::epilogue::thread::LinearCombinationBiasElementwise<
+        ElementC_, ElementAccumulator_, ElementAccumulator_,
+        ElementC_, ElementC_, 16 / sizeof(ElementC_)>,
     /// Threadblock-level swizzling operator
     typename ThreadblockSwizzle_ = threadblock::GemmIdentityThreadblockSwizzle<>,
     /// Number of stages used in the pipelined mainloop
@@ -113,9 +115,9 @@ template <
     /// Complex elementwise transformation on B operand
     ComplexTransform TransformB = ComplexTransform::kNone
 >
-class GemmUniversal :
+class GemmUniversalWithBroadcast :
   public GemmUniversalBase<
-    typename kernel::DefaultGemmUniversal<
+    typename kernel::DefaultGemmWithBroadcast<
       ElementA_,
       LayoutA_,
       TransformA,
@@ -158,7 +160,7 @@ class GemmUniversal :
   static ComplexTransform const kTransformB = TransformB;
 
   using Base = GemmUniversalBase<
-    typename kernel::DefaultGemmUniversal<
+    typename kernel::DefaultGemmWithBroadcast<
       ElementA_,
       LayoutA_,
       TransformA,
@@ -230,7 +232,7 @@ template <
     ComplexTransform TransformA,
     /// Complex elementwise transformation on B operand
     ComplexTransform TransformB>
-class GemmUniversal<ElementA_, LayoutA_, ElementB_, LayoutB_, ElementC_,
+class GemmUniversalWithBroadcast<ElementA_, LayoutA_, ElementB_, LayoutB_, ElementC_,
            layout::ColumnMajor,  // partially specialized on LayoutC
            ElementAccumulator_, OperatorClass_, ArchTag_, ThreadblockShape_,
            WarpShape_, InstructionShape_, EpilogueOutputOp_,
@@ -263,7 +265,7 @@ class GemmUniversal<ElementA_, LayoutA_, ElementB_, LayoutB_, ElementC_,
   static ComplexTransform const kTransformA = TransformA;
   static ComplexTransform const kTransformB = TransformB;
 
-  using UnderlyingOperator = typename GemmUniversal<
+  using UnderlyingOperator = typename GemmUniversalWithBroadcast<
     ElementB,
     typename layout::LayoutTranspose<LayoutB>::type,
     ElementA,
@@ -299,7 +301,7 @@ private:
 public:
 
   /// Constructs the GEMM.
-  GemmUniversal() { }
+  GemmUniversalWithBroadcast() { }
 
   /// Helper to construct a transposed equivalent for the underying GEMM operator
   static Arguments to_underlying_arguments(Arguments const &args) {

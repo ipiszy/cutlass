@@ -47,7 +47,7 @@ namespace detail {
 
 /// Helper to apply a binary operator in place
 template <
-  typename ElementA, 
+  typename ElementA,
   typename LayoutA,
   typename ElementB,
   typename LayoutB,
@@ -62,8 +62,8 @@ struct TensorFuncBinaryOp {
 
   /// View of left-hand-side tensor
   TensorView<ElementD, LayoutD> view_d;
-  TensorRef<ElementA, LayoutA> ref_a;
-  TensorRef<ElementB, LayoutB> ref_b;
+  TensorRef<ElementA, LayoutA> view_a;
+  TensorRef<ElementB, LayoutB> view_b;
   BinaryFunc func;
 
   //
@@ -76,8 +76,8 @@ struct TensorFuncBinaryOp {
   /// Constructor
   TensorFuncBinaryOp(
     TensorView<ElementD, LayoutD> const & view_d_,
-    TensorRef<ElementA, LayoutA> const & ref_a_,
-    TensorRef<ElementB, LayoutB> const & ref_b_,
+    TensorRef<ElementA, LayoutA> const & view_a_,
+    TensorRef<ElementB, LayoutB> const & view_b_,
     BinaryFunc func = BinaryFunc()
   ):
     view_d(view_d_), view_a(view_a_), view_b(view_b_), func(func) { }
@@ -112,7 +112,7 @@ void TensorAdd(
 ) {
 
   detail::TensorFuncBinaryOp<
-    ElementD, 
+    ElementD,
     LayoutD,
     ElementA,
     LayoutA,
@@ -123,7 +123,7 @@ void TensorAdd(
 
   TensorForEach(
     d.extent(),
-    func); 
+    func);
 }
 
 /// Adds a tensor in place: d = d .+ a
@@ -158,7 +158,7 @@ void TensorSub(
   ) {
 
   detail::TensorFuncBinaryOp<
-    ElementD, 
+    ElementD,
     LayoutD,
     ElementA,
     LayoutA,
@@ -185,7 +185,7 @@ void TensorSub(
   TensorView<ElementD, LayoutD> d,      ///< destination tensor view
   TensorRef<ElementA, LayoutA> a        ///< A tensor reference
   ) {
-  
+
   TensorSub(d, d, a);
 }
 
@@ -205,9 +205,9 @@ void TensorMul(
   TensorRef<ElementA, LayoutA> a,       ///< A tensor reference
   TensorRef<ElementB, LayoutB> b        ///< B tensor reference
 ) {
-  
+
   detail::TensorFuncBinaryOp<
-    ElementD, 
+    ElementD,
     LayoutD,
     ElementA,
     LayoutA,
@@ -251,9 +251,9 @@ void TensorDiv(
   TensorRef<ElementA, LayoutA> a,       ///< A tensor reference
   TensorRef<ElementB, LayoutB> b        ///< B tensor reference
 ) {
-  
+
   detail::TensorFuncBinaryOp<
-    ElementD, 
+    ElementD,
     LayoutD,
     ElementA,
     LayoutA,
@@ -278,7 +278,7 @@ void TensorDiv(
   TensorView<ElementD, LayoutD> d,      ///< destination tensor view
   TensorRef<ElementA, LayoutA> a        ///< A tensor reference
 ) {
-  TensorMul(d, d, a);
+  TensorDiv(d, d, a);
 }
 
 
@@ -298,15 +298,15 @@ void TensorModulus(
   TensorRef<ElementA, LayoutA> a,       ///< A tensor reference
   TensorRef<ElementB, LayoutB> b        ///< B tensor reference
 ) {
-  
+
   detail::TensorFuncBinaryOp<
-    ElementD, 
+    ElementD,
     LayoutD,
     ElementA,
     LayoutA,
     ElementB,
     LayoutB,
-    cutlass::modulus<ElementD>
+    cutlass::divides<ElementD>
   > func(d, a, b);
 
   TensorForEach(
@@ -325,7 +325,7 @@ void TensorModulus(
   TensorView<ElementD, LayoutD> d,      ///< destination tensor view
   TensorRef<ElementA, LayoutA> a        ///< A tensor reference
 ) {
-  TensorMul(d, d, a);
+  TensorModulus(d, d, a);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
