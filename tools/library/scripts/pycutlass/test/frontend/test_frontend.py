@@ -1,6 +1,6 @@
 #################################################################################################
 #
-# Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -29,12 +29,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 #################################################################################################
-## Test case for Pytorch
+
+"""
+Test cases for frontends
+"""
+
 import pycutlass
 import unittest
 from pycutlass import *
-import torch
-import cupy as cp
+from pycutlass.utils.device import device_cc
 
 
 class Test_Frontend(unittest.TestCase):
@@ -42,13 +45,15 @@ class Test_Frontend(unittest.TestCase):
         #
         # define the cutlass operator
         #
+        cc = device_cc()
         math_inst = MathInstruction(
             [1, 1, 1], cutlass.float32, cutlass.float32, cutlass.float32,
             cutlass.OpClass.Simt, MathOperation.multiply_add
         )
 
+        stages = 2
         tile_description = TileDescription(
-            [128, 128, 8], 4, [2, 4, 1],
+            [128, 128, 8], stages, [2, 4, 1],
             math_inst
         )
 
@@ -69,7 +74,7 @@ class Test_Frontend(unittest.TestCase):
             math_inst.element_accumulator, cutlass.float32)
 
         self.operation = GemmOperationUniversal(
-            arch=80, tile_description=tile_description,
+            arch=cc, tile_description=tile_description,
             A=A, B=B, C=C, 
             epilogue_functor=epilogue_functor, 
             swizzling_functor=cutlass.IdentitySwizzle1
@@ -79,6 +84,11 @@ class Test_Frontend(unittest.TestCase):
 
 
     def test_torch_frontend(self):
+        try:
+            import torch
+        except:
+            self.assertTrue(False, "Unable to import torch")
+
         problem_size = cutlass.gemm.GemmCoord(512, 256, 128)
 
         tensor_A = torch.ceil(torch.empty(size=(problem_size.m(), problem_size.k()), dtype=torch.float32, device="cuda").uniform_(-8.5, 7.5))
@@ -106,6 +116,11 @@ class Test_Frontend(unittest.TestCase):
         self.assertTrue(torch.equal(tensor_D, tensor_D_ref))
     
     def test_cupy_frontend(self):
+        try:
+            import cupy as cp
+        except:
+            self.assertTrue(False, "Unable to import cupy")
+
         cp.cuda.set_allocator(rmm.rmm_cupy_allocator)
 
         problem_size = cutlass.gemm.GemmCoord(512, 256, 128)
@@ -132,7 +147,6 @@ class Test_Frontend(unittest.TestCase):
         arguments.sync()
 
         self.assertTrue(cp.array_equal(tensor_D, tensor_D_ref))
-
 
 
 if __name__ == '__main__':

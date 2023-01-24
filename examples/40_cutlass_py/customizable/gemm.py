@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -32,6 +32,7 @@
 import numpy as np
 import pycutlass
 from pycutlass import *
+from pycutlass.utils.device import device_cc
 import cutlass
 from bfloat16 import bfloat16
 import sys
@@ -131,11 +132,15 @@ parser.add_argument("-activ_arg", "--activation_args", default=[], nargs="+", ty
 parser.add_argument('--print_cuda', action="store_true",
                     help="print the underlying CUDA kernel")
 
-
 try:
     args = parser.parse_args()
 except:
     sys.exit(0)
+
+cc = device_cc()
+if args.compute_capability != cc:
+    raise Exception(("Parameter --compute-capability of {} "
+                    "does not match that of the device of {}.").format(args.compute_capability, cc))
 
 pycutlass.get_memory_pool(init_pool_size=2**30, max_pool_size=2**32)
 pycutlass.compiler.nvcc()

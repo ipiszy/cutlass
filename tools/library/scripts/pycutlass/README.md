@@ -81,13 +81,24 @@ The tiling size of above operations can also be customized.
 ## Installation
 
 ### Using Docker
-You can run the PyCUTLASS on NGC PyTorch container. 
+We recommend using one of our provided Docker images for using PyCUTLASS.
+
+**To run CUTLASS 3 GEMM kernels targetting the NVIDIA Hopper architecture via PyCUTLASS,** you can use an included [Dockerfile](docker/Dockerfile-cuda12.0) based on the NGC CUDA 12.0 container:
 ```shell
-docker run --gpus all -it --rm nvcr.io/nvidia/pytorch:22.09-py3
+docker build -t pycutlass-cuda12.0:latest -f docker/Dockerfile-cuda12.0 .
+docker run --gpus all -it --rm pycutlass-cuda12.0:latest
+```
+Note that this Docker container does not include CuPy or PyTorch, and, thus, will not be able to run PyCUTLASS examples that
+leverage these packages.
+
+**To run CUTLASS 2.x kernels targetting pre-SM90 architectures via PyCUTLASS,** you can use an included [Dockerfile](docker/Dockerfile-cuda11.8-pytorch) based on an NGC PyTorch container:
+```shell
+docker build -t pycutlass-cuda11.8-pytorch:latest -f docker/Dockerfile-cuda11.8-pytorch .
+docker run --gpus all -it --rm pycutlass-cuda11.8-pytorch:latest
 ```
 
 ### Environment variables
-PyCUTLASSS requires two environment variables:
+PyCUTLASS requires two environment variables:
 * `CUTLASS_PATH`: the root directory of CUTLASS. You can set this from the location at which you cloned CUTLASS via: `export CUTLASS_PATH=$(pwd)`.
 * `CUDA_INSTALL_PATH`: the directory where cuda toolkit is installed. If running in bash with `nvcc` installed under a CUDA toolkit, you can set this to the location of your `nvcc` installation via: `export CUDA_INSTALL_PATH=$(which nvcc | awk -F'/bin/nvcc' '{print $1}')`
 
@@ -102,8 +113,10 @@ Examples can be found in [$CUTLASS_PATH/examples/40_cutlass_py](examples/40_cutl
 ## Test
 The test cases are listed in `$CUTLASS_PATH//tools/library/scripts/pycutlass/test`. The unit test can be run with
 ```shell
+# Each of these tests are only supported on devices with compute capability of SM80. For other devices,
+# see the basic examples in $CUTLASS_PATH/examples/40_cutlass_py
 cd $CUTLASS_PATH/tools/library/scripts/pycutlass/test/unit && python test_sm80.py
-cd $CUTLASS_PATH/tools/library/scripts/pycutlass/test/example && run_all_example.sh
+cd $CUTLASS_PATH/tools/library/scripts/pycutlass/test/example && bash run_all_example.sh
 ```
 
 ## build documentation
