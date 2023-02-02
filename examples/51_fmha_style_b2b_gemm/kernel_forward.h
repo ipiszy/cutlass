@@ -48,6 +48,7 @@
 #include "cutlass/numeric_types.h"
 
 #include "attention_scaling_coefs_updater.h"
+#include "cutlass/epilogue/thread/linear_combination.h"
 #include "cutlass/epilogue/threadblock/default_epilogue_simt.h"
 #include "cutlass/epilogue/threadblock/default_epilogue_tensor_op.h"
 #include "cutlass/epilogue/threadblock/default_epilogue_volta_tensor_op.h"
@@ -109,6 +110,7 @@ struct AttentionKernel {
   static constexpr bool kPreloadV = ArchTag::kMinComputeCapability >= 80 &&
       cutlass::sizeof_bits<scalar_t>::value == 16;
   static constexpr bool kKeepOutputInRF = kSingleValueIteration;
+//  static_assert(kKeepOutputInRF, "");
   static constexpr bool kNeedsOutputAccumulatorBuffer = !kKeepOutputInRF &&
       !cutlass::platform::is_same<output_accum_t, output_t>::value;
 
@@ -342,7 +344,7 @@ struct AttentionKernel {
             ArchTag,
             scalar_t,
             scalar_t,
-            output_accum_t, // ElementC
+            scalar_t, // ElementC
             accum_t // ElementAccumulator
             >;
     static constexpr int kAlignmentA = DefaultConfig::kAlignmentA; // from smem
@@ -407,9 +409,9 @@ struct AttentionKernel {
 
   // Shared storage - depends on kernel params
   struct ScalingCoefs {
-    cutlass::Array<accum_t, kQueriesPerBlock> m_prime;
-    cutlass::Array<accum_t, kQueriesPerBlock> s_prime;
-    cutlass::Array<accum_t, kQueriesPerBlock> mi;
+//    cutlass::Array<accum_t, kQueriesPerBlock> m_prime;
+//    cutlass::Array<accum_t, kQueriesPerBlock> s_prime;
+//    cutlass::Array<accum_t, kQueriesPerBlock> mi;
   };
 
   struct SharedStorageEpilogueAtEnd : ScalingCoefs {
@@ -481,18 +483,18 @@ struct AttentionKernel {
 
     extern __shared__ char smem_buffer[];
     SharedStorage& shared_storage = *((SharedStorage*)smem_buffer);
-    auto& m_prime = shared_storage.m_prime;
-    auto& s_prime = shared_storage.s_prime;
+ //   auto& m_prime = shared_storage.m_prime;
+ //   auto& s_prime = shared_storage.s_prime;
     [[maybe_unused]] auto& si = shared_storage.after_mm0.si;
-    auto& mi = shared_storage.mi;
+//    auto& mi = shared_storage.mi;
 
     static_assert(kQueriesPerBlock < kNumWarpsPerBlock * kWarpSize, "");
-    if (thread_id() < kQueriesPerBlock) {
-      s_prime[thread_id()] = accum_t(0);
-      m_prime[thread_id()] =
-          -cutlass::platform::numeric_limits<accum_t>::infinity();
-      mi[thread_id()] = -cutlass::platform::numeric_limits<accum_t>::infinity();
-    }
+//    if (thread_id() < kQueriesPerBlock) {
+//      s_prime[thread_id()] = accum_t(0);
+//      m_prime[thread_id()] =
+//          -cutlass::platform::numeric_limits<accum_t>::infinity();
+//      mi[thread_id()] = -cutlass::platform::numeric_limits<accum_t>::infinity();
+//    }
     typename MM1::Mma::FragmentC accum_o;
     accum_o.clear();
 
@@ -630,33 +632,33 @@ struct AttentionKernel {
             },
             [&](int accum_m) {});
       }
-      DISPATCH_BOOL(iter_key_start == 0, kIsFirst, ([&] {
-                      DISPATCH_BOOL(
-                          p.num_keys - iter_key_start >= kKeysPerBlock,
-                          kFullColumns,
-                          ([&] {
-                            // Update `mi` from accum stored in registers
-                            // Also updates `accum` with accum[i] <-
-                            // exp(accum[i] * scale
-                            // - mi)
-                            MM0::ScalingCoefsUpdater::update<
-                                kQueriesPerBlock,
-                                kFullColumns,
-                                kIsFirst,
-                                kKeepOutputInRF>(
-                                accum_o,
-                                accum,
-                                mi,
-                                m_prime,
-                                s_prime,
-                                lane_id(),
-                                thread_id(),
-                                warp_id(),
-                                p.num_keys - iter_key_start,
-                                iteratorC_tile_offset,
-                                1.0f / cutlass::fast_sqrt(float(p.head_dim)));
-                          }));
-                    }));
+//      DISPATCH_BOOL(iter_key_start == 0, kIsFirst, ([&] {
+//                      DISPATCH_BOOL(
+//                          p.num_keys - iter_key_start >= kKeysPerBlock,
+//                          kFullColumns,
+//                          ([&] {
+//                            // Update `mi` from accum stored in registers
+//                            // Also updates `accum` with accum[i] <-
+//                            // exp(accum[i] * scale
+//                            // - mi)
+//                            MM0::ScalingCoefsUpdater::update<
+//                                kQueriesPerBlock,
+//                                kFullColumns,
+//                                kIsFirst,
+//                                kKeepOutputInRF>(
+//                                accum_o,
+//                                accum,
+//                                mi,
+//                                m_prime,
+//                                s_prime,
+//                                lane_id(),
+//                                thread_id(),
+//                                warp_id(),
+//                                p.num_keys - iter_key_start,
+//                                iteratorC_tile_offset,
+//                                1.0f / cutlass::fast_sqrt(float(p.head_dim)));
+//                          }));
+//                    }));
 
       // Output results to shared-memory
       int warp_idx_mn_0 = my_warp_id %
@@ -715,71 +717,71 @@ struct AttentionKernel {
           prologueV(blockN + 1);
         }
 
-        if (!kKeepOutputInRF) {
-          DISPATCH_BOOL(
-              iter_key_start == 0, kIsFirst, ([&] {
-                DISPATCH_BOOL(
-                    (iter_key_start + kKeysPerBlock) >= p.num_keys,
-                    kIsLast,
-                    ([&] {
-                      using DefaultEpilogue = typename MM1::DefaultEpilogue;
-                      using DefaultOp =
-                          typename MM1::DefaultConfig::EpilogueOutputOp;
-                      using ElementCompute = typename DefaultOp::ElementCompute;
-                      using EpilogueOutputOp = typename cutlass::epilogue::
-                          thread::MemoryEfficientAttentionNormalize<
-                              typename cutlass::platform::conditional<
-                                  kIsLast,
-                                  output_t,
-                                  output_accum_t>::type,
-                              output_accum_t,
-                              DefaultOp::kCount,
-                              typename DefaultOp::ElementAccumulator,
-                              ElementCompute,
-                              kIsFirst,
-                              kIsLast,
-                              cutlass::Array<ElementCompute, kQueriesPerBlock>>;
-                      using Epilogue = typename cutlass::epilogue::threadblock::
-                          EpiloguePipelined<
-                              typename DefaultEpilogue::Shape,
-                              typename MM1::Mma::Operator,
-                              DefaultEpilogue::kPartitionsK,
-                              typename cutlass::platform::conditional<
-                                  kIsLast,
-                                  typename MM1::OutputTileIterator,
-                                  typename MM1::OutputTileIteratorAccum>::type,
-                              typename DefaultEpilogue::
-                                  AccumulatorFragmentIterator,
-                              typename DefaultEpilogue::WarpTileIterator,
-                              typename DefaultEpilogue::SharedLoadIterator,
-                              EpilogueOutputOp,
-                              typename DefaultEpilogue::Padding,
-                              DefaultEpilogue::kFragmentsPerIteration,
-                              true, // IterationsUnroll
-                              typename MM1::OutputTileIteratorAccum // Read
-                                                                    // iterator
-                              >;
-
-                      int col = blockN * MM1::Mma::Shape::kN;
-                      auto source_iter = createOutputAccumIter(col);
-                      auto dest_iter = call_conditional<
-                          kIsLast,
-                          decltype(createOutputIter),
-                          decltype(createOutputAccumIter)>::
-                          apply(createOutputIter, createOutputAccumIter, col);
-                      EpilogueOutputOp rescale(s_prime, m_prime);
-                      Epilogue epilogue(
-                          shared_storage.epilogue_shared_storage(),
-                          thread_id(),
-                          warp_id(),
-                          lane_id());
-                      epilogue(rescale, dest_iter, accum_o, source_iter);
-                    }));
-              }));
-          if (!kSingleValueIteration) {
-            __syncthreads();
-          }
-        }
+//        if (!kKeepOutputInRF) {
+//          DISPATCH_BOOL(
+//              iter_key_start == 0, kIsFirst, ([&] {
+//                DISPATCH_BOOL(
+//                    (iter_key_start + kKeysPerBlock) >= p.num_keys,
+//                    kIsLast,
+//                    ([&] {
+//                      using DefaultEpilogue = typename MM1::DefaultEpilogue;
+//                      using DefaultOp =
+//                          typename MM1::DefaultConfig::EpilogueOutputOp;
+//                      using ElementCompute = typename DefaultOp::ElementCompute;
+//                      using EpilogueOutputOp = typename cutlass::epilogue::
+//                          thread::MemoryEfficientAttentionNormalize<
+//                              typename cutlass::platform::conditional<
+//                                  kIsLast,
+//                                  output_t,
+//                                  output_accum_t>::type,
+//                              output_accum_t,
+//                              DefaultOp::kCount,
+//                              typename DefaultOp::ElementAccumulator,
+//                              ElementCompute,
+//                              kIsFirst,
+//                              kIsLast,
+//                              cutlass::Array<ElementCompute, kQueriesPerBlock>>;
+//                      using Epilogue = typename cutlass::epilogue::threadblock::
+//                          EpiloguePipelined<
+//                              typename DefaultEpilogue::Shape,
+//                              typename MM1::Mma::Operator,
+//                              DefaultEpilogue::kPartitionsK,
+//                              typename cutlass::platform::conditional<
+//                                  kIsLast,
+//                                  typename MM1::OutputTileIterator,
+//                                  typename MM1::OutputTileIteratorAccum>::type,
+//                              typename DefaultEpilogue::
+//                                  AccumulatorFragmentIterator,
+//                              typename DefaultEpilogue::WarpTileIterator,
+//                              typename DefaultEpilogue::SharedLoadIterator,
+//                              EpilogueOutputOp,
+//                              typename DefaultEpilogue::Padding,
+//                              DefaultEpilogue::kFragmentsPerIteration,
+//                              true, // IterationsUnroll
+//                              typename MM1::OutputTileIteratorAccum // Read
+//                                                                    // iterator
+//                              >;
+//
+//                      int col = blockN * MM1::Mma::Shape::kN;
+//                      auto source_iter = createOutputAccumIter(col);
+//                      auto dest_iter = call_conditional<
+//                          kIsLast,
+//                          decltype(createOutputIter),
+//                          decltype(createOutputAccumIter)>::
+//                          apply(createOutputIter, createOutputAccumIter, col);
+//                      EpilogueOutputOp rescale(s_prime, m_prime);
+//                      Epilogue epilogue(
+//                          shared_storage.epilogue_shared_storage(),
+//                          thread_id(),
+//                          warp_id(),
+//                          lane_id());
+//                      epilogue(rescale, dest_iter, accum_o, source_iter);
+//                    }));
+//              }));
+//          if (!kSingleValueIteration) {
+//            __syncthreads();
+//          }
+//        }
       }
       __syncthreads(); // we modify `m_prime` after
     }
@@ -790,55 +792,59 @@ struct AttentionKernel {
       using DefaultEpilogue = typename MM1::DefaultEpilogue;
       using DefaultOp = typename MM1::DefaultConfig::EpilogueOutputOp;
       using ElementCompute = typename DefaultOp::ElementCompute;
-      using EpilogueOutputOp =
-          typename cutlass::epilogue::thread::MemoryEfficientAttentionNormalize<
-              output_t, // output
-              output_accum_t, // source
-              DefaultOp::kCount,
-              typename DefaultOp::ElementAccumulator, // accum
-              output_accum_t, // compute
-              kIsFirst,
-              kIsLast,
-              cutlass::Array<ElementCompute, kQueriesPerBlock>>;
-      using Epilogue =
-          typename cutlass::epilogue::threadblock::EpiloguePipelined<
-              typename DefaultEpilogue::Shape,
-              typename MM1::Mma::Operator,
-              DefaultEpilogue::kPartitionsK,
-              typename MM1::OutputTileIterator, // destination
-              typename DefaultEpilogue::AccumulatorFragmentIterator,
-              typename DefaultEpilogue::WarpTileIterator,
-              typename DefaultEpilogue::SharedLoadIterator,
-              EpilogueOutputOp,
-              typename DefaultEpilogue::Padding,
-              DefaultEpilogue::kFragmentsPerIteration,
-              true, // IterationsUnroll
-              typename MM1::OutputTileIteratorAccum // source tile
-              >;
+//      using EpilogueOutputOp =
+//          typename cutlass::epilogue::thread::MemoryEfficientAttentionNormalize<
+//              output_t, // output
+//              output_accum_t, // source
+//              DefaultOp::kCount,
+//              typename DefaultOp::ElementAccumulator, // accum
+//              output_accum_t, // compute
+//              kIsFirst,
+//              kIsLast,
+//              cutlass::Array<ElementCompute, kQueriesPerBlock>>;
+//      using EpilogueOutputOp =
+//          typename cutlass::epilogue::thread::LinearCombination<
+//              scalar_t, 128 / cutlass::sizeof_bits<scalar_t>::value, accum_t, accum_t
+//          >;
+//      using Epilogue =
+//          typename cutlass::epilogue::threadblock::Epilogue<
+//              typename DefaultEpilogue::Shape,
+//              typename MM1::Mma::Operator,
+//              DefaultEpilogue::kPartitionsK,
+//              typename MM1::OutputTileIterator, // destination
+//              typename DefaultEpilogue::AccumulatorFragmentIterator,
+//              typename DefaultEpilogue::WarpTileIterator,
+//              typename DefaultEpilogue::SharedLoadIterator,
+//              EpilogueOutputOp,
+//              typename DefaultEpilogue::Padding,
+//              DefaultEpilogue::kFragmentsPerIteration,
+//              true // IterationsUnroll
+//              >;
       auto dest_iter = createOutputIter(0);
-      EpilogueOutputOp rescale(s_prime, m_prime);
-      Epilogue epilogue(
+      DefaultOp epilogue_op({1, 0});
+//      EpilogueOutputOp rescale(s_prime, m_prime);
+      DefaultEpilogue epilogue(
           shared_storage.epilogue_shared_storage(),
           thread_id(),
           warp_id(),
           lane_id());
-      epilogue(rescale, dest_iter, accum_o);
+      epilogue(epilogue_op, dest_iter, accum_o);
     }
 
-    // 7. Calculate logsumexp
-    // To make the backward easier, we pad logsumexp with `inf`
-    // this avoids a few bound checks, and is not more expensive during fwd
-    static_assert(kQueriesPerBlock < kNumWarpsPerBlock * kWarpSize, "");
-    if (p.logsumexp_ptr && thread_id() < kQueriesPerBlock) {
-      auto lse_dim = ceil_div((int32_t)p.num_queries, kAlignLSE) * kAlignLSE;
-      if (thread_id() < p.num_queries) {
-        p.logsumexp_ptr[thread_id()] = accum_t(mi[thread_id()]) +
-            cutlass::fast_log(accum_t(s_prime[thread_id()]));
-      } else if (thread_id() < lse_dim) {
-        p.logsumexp_ptr[thread_id()] =
-            cutlass::platform::numeric_limits<accum_t>::infinity();
-      }
-    }
+//    // 7. Calculate logsumexp
+//    // To make the backward easier, we pad logsumexp with `inf`
+//    // this avoids a few bound checks, and is not more expensive during fwd
+//    static_assert(kQueriesPerBlock < kNumWarpsPerBlock * kWarpSize, "");
+//    if (p.logsumexp_ptr && thread_id() < kQueriesPerBlock) {
+//      auto lse_dim = ceil_div((int32_t)p.num_queries, kAlignLSE) * kAlignLSE;
+//      if (thread_id() < p.num_queries) {
+//        p.logsumexp_ptr[thread_id()] = accum_t(mi[thread_id()]) +
+//            cutlass::fast_log(accum_t(s_prime[thread_id()]));
+//      } else if (thread_id() < lse_dim) {
+//        p.logsumexp_ptr[thread_id()] =
+//            cutlass::platform::numeric_limits<accum_t>::infinity();
+//      }
+//    }
   }
 
   static CUTLASS_DEVICE int8_t lane_id() {

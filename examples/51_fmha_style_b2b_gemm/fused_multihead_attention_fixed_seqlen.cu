@@ -170,7 +170,7 @@ struct Options {
   int seq_length_kv;
   int iterations;
 
-  // alpha0, alpha1 and beta are fixed 
+  // alpha0, alpha1 and beta are fixed
   // in this multi-head attention example
   float alpha0;
   float alpha1;
@@ -178,7 +178,7 @@ struct Options {
 
   //
   // Methods
-  // 
+  //
 
   Options():
     help(false),
@@ -206,16 +206,16 @@ struct Options {
     }
 
     cmd.get_cmd_line_argument("alignment", alignment, 1);
-    cmd.get_cmd_line_argument("head_number", head_number, 12);
-    cmd.get_cmd_line_argument("batch_size", batch_size, 16);
-    cmd.get_cmd_line_argument("head_size", head_size, 64);
+    cmd.get_cmd_line_argument("head_number", head_number, 1);
+    cmd.get_cmd_line_argument("batch_size", batch_size, 2048);
+    cmd.get_cmd_line_argument("head_size", head_size, 128);
     cmd.get_cmd_line_argument("head_size_v", head_size_v, head_size);
-    cmd.get_cmd_line_argument("seq_length", seq_length, 1024);
+    cmd.get_cmd_line_argument("seq_length", seq_length, 256);
     cmd.get_cmd_line_argument("seq_length_kv", seq_length_kv, seq_length);
     cmd.get_cmd_line_argument("use_mask", use_mask, false);
     cmd.get_cmd_line_argument("iterations", iterations, 20);
     cmd.get_cmd_line_argument("reference-check", reference_check, true);
-    cmd.get_cmd_line_argument("causal", causal, true);
+    cmd.get_cmd_line_argument("causal", causal, false);
 
     randomize_problems();
 
@@ -283,7 +283,7 @@ struct Options {
   /// Compute performance in GFLOP/s
   double gflops(double runtime_s) const {
 
-    // Number of real-valued multiply-adds 
+    // Number of real-valued multiply-adds
     int64_t fops = int64_t();
 
     for (int i = 0; i < problem_sizes0.size(); ++i) {
@@ -427,7 +427,7 @@ private:
   template <typename Element>
   void initialize_tensor_(
     Element *ptr,
-    size_t capacity, 
+    size_t capacity,
     cutlass::Distribution::Kind dist_kind,
     uint32_t seed) {
 
@@ -452,8 +452,9 @@ private:
       }
 
       cutlass::reference::device::BlockFillRandomUniform(
-        ptr, capacity, seed, scope_max, scope_min, 0);
-    } 
+//        ptr, capacity, seed, scope_max, scope_min, 0);
+        ptr, capacity, seed, Element(1.0), Element(-1.0));
+    }
     else if (dist_kind == cutlass::Distribution::Gaussian) {
 
       cutlass::reference::device::BlockFillRandomGaussian(
@@ -464,7 +465,7 @@ private:
       // Fill with increasing elements
       cutlass::reference::device::BlockFillSequential(
         ptr, capacity, Element(1), Element());
-    } 
+    }
     else {
 
       // Fill with all 1s
@@ -594,10 +595,10 @@ private:
 
     ptr_Q.reset(problem_count());
     ptr_Q.copy_from_host(ptr_Q_host.data());
-    
+
     ptr_K.reset(problem_count());
     ptr_K.copy_from_host(ptr_K_host.data());
-    
+
     ptr_P.reset(problem_count());
     ptr_P.copy_from_host(ptr_P_host.data());
 
@@ -629,6 +630,7 @@ private:
     float abs_tol = 5e-2f;
     // 10% for relative error
     float rel_tol = 1e-1f;
+    bool res = true;
     for (int64_t i = 0; i < size; ++i) {
       float diff = (float)(vector_Input.at(i) - vector_Input_Ref.at(i));
       float abs_diff = fabs(diff);
@@ -636,12 +638,12 @@ private:
       float relative_diff = abs_diff / abs_ref;
       if ( (isnan(vector_Input_Ref.at(i)) || isnan(abs_diff) || isinf(abs_diff)) ||  (abs_diff > abs_tol && relative_diff > rel_tol)) {
         printf("[%d/%d] diff = %f, rel_diff = %f, {computed=%f, ref=%f}.\n", int(i), int(size), abs_diff, relative_diff, (float)(vector_Input.at(i)), (float)(vector_Input_Ref.at(i)));
-        return false;
+        res = false;
       }
 
     }
 
-    return true;
+    return res;
   }
 
   /// Verifies the result is a GEMM
@@ -680,18 +682,20 @@ private:
       cutlass::reference::device::GemmComplex<
           ElementQ, LayoutQ,
           ElementK, LayoutK,
-          ElementP, LayoutP, 
+          ElementP, LayoutP,
           ElementCompute, ElementAccumulator
       >(
         problem0,
-        ElementAccumulator(options.alpha0), 
+//        ElementAccumulator(options.alpha0),
+        ElementAccumulator(1.0),
         view_Q,
         Attention::MM0::Mma::kTransformA,
         view_K,
         Attention::MM0::Mma::kTransformB,
-        ElementAccumulator(options.beta), 
-        view_P, 
-        view_Ref_device, 
+//        ElementAccumulator(options.beta),
+        ElementAccumulator(0.0),
+        view_P,
+        view_Ref_device,
         ElementAccumulator(0)
       );
 
@@ -699,72 +703,74 @@ private:
       // over P because softmax is fused to the second GEMM in the
       // profiled implementation.
       std::vector<ElementP> matrix_Ref(layout_P.capacity(extent_P));
-      cutlass::device_memory::copy_to_host(matrix_Ref.data(), block_Ref.get(), matrix_Ref.size());
-      cutlass::TensorView<ElementP, LayoutP> view_Ref_host(matrix_Ref.data(), layout_P, extent_P);
-      std::vector<ElementNorm> vector_Norm_Ref(problem0.m());
-      std::vector<ElementSum> vector_Sum_Ref(problem0.m());
-
-      int n_dim = options.use_mask ? options.problem_sizes0_real.at(i).n() : problem0.n();
-
-      // Compute softmax for referece matrix
-      for (int m = 0; m < problem0.m(); m++) {
-        int n_dim_row = n_dim;
-        if (options.causal) {
-          n_dim_row = std::min(m + 1, n_dim);
-        }
-        ElementSoftmaxCompute max = ElementSoftmaxCompute(view_Ref_host.ref().at({m, 0}));
-        for (int n = 1; n < n_dim_row; n++) {
-           max = std::max(max, ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})));
-        }
-
-        vector_Norm_Ref.at(m) = ElementNorm(max);
-
-        ElementSoftmaxCompute sum = ElementSoftmaxCompute();
-        for (int n = 0; n < n_dim_row; n++) {
-          sum += std::exp( ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})) - max );
-        }
-        ElementSoftmaxCompute inv_sum = ElementSoftmaxCompute(1.0f / sum);
-
-        vector_Sum_Ref.at(m) = ElementSum(inv_sum);
-
-        for (int n = 0; n < n_dim_row; n++) {
-          view_Ref_host.ref().at({m, n}) = ElementP(
-            std::exp( ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})) - max ) * inv_sum
-          );
-        }
-        // Mask out the rest of the attention matrix
-        for (int n = n_dim_row; n < n_dim; ++n) {
-          view_Ref_host.ref().at({m, n}) = ElementP(0);
-        }
-      }
-
-      // when not using mask, problem_real and problem share the same sizes
-      if (options.use_mask) {
-        for (int m = 0; m < problem0.m(); m++) {
-          for (int n = n_dim; n < problem0.n(); n++) {
-            view_Ref_host.ref().at({m, n}) = ElementP(0);
-          }
-        }
-      }
-
-      cutlass::device_memory::copy_to_device(block_P.get() + offset_P.at(i), matrix_Ref.data(), matrix_Ref.size());
+//      cutlass::device_memory::copy_to_host(matrix_Ref.data(), block_Ref.get(), matrix_Ref.size());
+//      cutlass::TensorView<ElementP, LayoutP> view_Ref_host(matrix_Ref.data(), layout_P, extent_P);
+//      std::vector<ElementNorm> vector_Norm_Ref(problem0.m());
+//      std::vector<ElementSum> vector_Sum_Ref(problem0.m());
+//
+//      int n_dim = options.use_mask ? options.problem_sizes0_real.at(i).n() : problem0.n();
+//
+//      // Compute softmax for referece matrix
+//      for (int m = 0; m < problem0.m(); m++) {
+//        int n_dim_row = n_dim;
+//        if (options.causal) {
+//          n_dim_row = std::min(m + 1, n_dim);
+//        }
+//        ElementSoftmaxCompute max = ElementSoftmaxCompute(view_Ref_host.ref().at({m, 0}));
+//        for (int n = 1; n < n_dim_row; n++) {
+//           max = std::max(max, ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})));
+//        }
+//
+//        vector_Norm_Ref.at(m) = ElementNorm(max);
+//
+//        ElementSoftmaxCompute sum = ElementSoftmaxCompute();
+//        for (int n = 0; n < n_dim_row; n++) {
+//          sum += std::exp( ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})) - max );
+//        }
+//        ElementSoftmaxCompute inv_sum = ElementSoftmaxCompute(1.0f / sum);
+//
+//        vector_Sum_Ref.at(m) = ElementSum(inv_sum);
+//
+//        for (int n = 0; n < n_dim_row; n++) {
+//          view_Ref_host.ref().at({m, n}) = ElementP(
+//            std::exp( ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})) - max ) * inv_sum
+//          );
+//        }
+//        // Mask out the rest of the attention matrix
+//        for (int n = n_dim_row; n < n_dim; ++n) {
+//          view_Ref_host.ref().at({m, n}) = ElementP(0);
+//        }
+//      }
+//
+//      // when not using mask, problem_real and problem share the same sizes
+//      if (options.use_mask) {
+//        for (int m = 0; m < problem0.m(); m++) {
+//          for (int n = n_dim; n < problem0.n(); n++) {
+//            view_Ref_host.ref().at({m, n}) = ElementP(0);
+//          }
+//        }
+//      }
+//
+//      cutlass::device_memory::copy_to_device(block_P.get() + offset_P.at(i), matrix_Ref.data(), matrix_Ref.size());
 
       // Reference GEMM
       cutlass::reference::device::GemmComplex<
           ElementP, LayoutP,
           ElementV, LayoutV,
-          ElementO, LayoutO, 
+          ElementO, LayoutO,
           ElementCompute, ElementAccumulator
       >(
         problem1,
-        ElementAccumulator(options.alpha1), 
-        view_P,
+//        ElementAccumulator(options.alpha1),
+        ElementAccumulator(1.0),
+        view_Ref_device,
         Attention::MM0::Mma::kTransformA,
         view_V,
         Attention::MM0::Mma::kTransformB,
-        ElementAccumulator(options.beta), 
-        view_Ref_O_device, 
-        view_Ref_O_device, 
+//        ElementAccumulator(options.beta),
+        ElementAccumulator(0.0),
+        view_Ref_O_device,
+        view_Ref_O_device,
         ElementAccumulator(0)
       );
 
@@ -778,7 +784,6 @@ private:
 
       // printf("Pb %d: \n    Q=(offset=%d, ldq=%d)\n    K=(offset=%d, ldk=%d)\n    O=(offset=%d, ldo=%d)\n",
       //   int(i), int(offset_Q[i]), int(ldq_host[i]), int(offset_K[i]), int(ldk_host[i]), int(offset_O[i]), int(ldo_host[i]));
-  
       bool verified_O = false;
 
       if (!verified_O) {
@@ -1025,12 +1030,11 @@ int main(int argc, char const **args) {
   }
 
   if (__CUDACC_VER_MAJOR__ < 11 || props.major < 8) {
-  
     //
     // This example requires an NVIDIA Ampere-architecture GPU.
     //
 
-    std::cout 
+    std::cout
       << "CUTLASS's CUTLASS Attention example requires a GPU of NVIDIA's Ampere Architecture or "
       << "later (compute capability 80 or greater).\n";
 
@@ -1042,7 +1046,6 @@ int main(int argc, char const **args) {
   //
 
   Options options;
-  
   options.parse(argc, args);
 
   if (options.help) {
