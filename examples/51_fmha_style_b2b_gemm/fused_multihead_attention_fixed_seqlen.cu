@@ -1072,19 +1072,26 @@ int main(int argc, char const **args) {
   // 64 keys, and parital results can be stored in the register file.
   // If head size is greater than 64, each block operates over 32 queries and 128 keys,
   // and partial results are stored in shared memory.
-  if (options.head_size_v > 64) {
-    static int const kQueriesPerBlock = 32;
-    static int const kKeysPerBlock = 128;
-    if (options.head_size_v <= kKeysPerBlock) {
-      return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
-    } else {
-      return run_attention<kQueriesPerBlock, kKeysPerBlock, false>(options);
-    }
-  } else {
-    static int const kQueriesPerBlock = 64;
-    static int const kKeysPerBlock = 64;
-    return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
-  }
+//  if (options.head_size_v > 64) {
+//    static int const kQueriesPerBlock = 32;
+//    static int const kKeysPerBlock = 128;
+//    if (options.head_size_v <= kKeysPerBlock) {
+//      return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
+//    } else {
+//      return run_attention<kQueriesPerBlock, kKeysPerBlock, false>(options);
+//    }
+//  } else {
+//    static int const kQueriesPerBlock = 64;
+//    static int const kKeysPerBlock = 64;
+//    return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
+//  }
+
+  // run_attention<16, 128, true>(options);
+  run_attention<32, 128, true>(options);
+  run_attention<64, 128, true>(options);
+  run_attention<128, 128, true>(options);
+
+//  run_attention<32, 64, true>(options);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

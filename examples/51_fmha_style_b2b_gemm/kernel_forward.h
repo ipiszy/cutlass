@@ -522,7 +522,8 @@ struct AttentionKernel {
         };
 
     // Iterate through keys
-    for (int32_t iter_key_start = 0; iter_key_start < p.num_keys;
+    #pragma unroll
+    for (int32_t iter_key_start = 0; iter_key_start < 256;
          iter_key_start += kKeysPerBlock) {
       int32_t problem_size_0_m =
           cutlass::fast_min((int32_t)kQueriesPerBlock, p.num_queries);
