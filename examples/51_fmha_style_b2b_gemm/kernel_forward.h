@@ -29,15 +29,6 @@
  *
  **************************************************************************************************/
 
-#pragma once
-
-#ifdef HAS_PYTORCH
-#include <ATen/ATen.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <torch/library.h>
-#endif
-
 #include <cmath>
 #include <vector>
 
@@ -110,7 +101,6 @@ struct AttentionKernel {
   static constexpr bool kPreloadV = ArchTag::kMinComputeCapability >= 80 &&
       cutlass::sizeof_bits<scalar_t>::value == 16;
   static constexpr bool kKeepOutputInRF = kSingleValueIteration;
-//  static_assert(kKeepOutputInRF, "");
   static constexpr bool kNeedsOutputAccumulatorBuffer = !kKeepOutputInRF &&
       !cutlass::platform::is_same<output_accum_t, output_t>::value;
 
@@ -139,6 +129,9 @@ struct AttentionKernel {
         output_accum_ptr; // [num_queries, num_heads, head_dim_value]
     lse_scalar_t* logsumexp_ptr; // [num_heads, num_queries] - can be null
 
+    // Scale
+    accum_t scale;
+
     // Dimensions/strides
     int32_t head_dim;
     int32_t head_dim_value;
@@ -156,20 +149,15 @@ struct AttentionKernel {
     int32_t q_strideH;
     int32_t k_strideH;
     int32_t v_strideH;
-    int32_t o_strideH;
     int64_t q_strideB;
     int64_t k_strideB;
     int64_t v_strideB;
-    int64_t o_strideB;
     int32_t num_batches;
     int32_t num_heads;
 
     CUTLASS_HOST_DEVICE int32_t o_strideM() const {
-      // Note: Note in sync with cutlass' main branch!! Make sure to apply
-      // when updating cutlass.
       return head_dim_value * num_heads;
     }
-
     // Moves pointers to what we should process
     // Returns "false" if there is no work to do
     CUTLASS_DEVICE bool advance_to_block() {
@@ -199,9 +187,9 @@ struct AttentionKernel {
         query_ptr += batch_id * q_strideB;
         key_ptr += batch_id * k_strideB;
         value_ptr += batch_id * v_strideB;
-        output_ptr += batch_id * o_strideB;
+        output_ptr += int64_t(batch_id * num_queries) * o_strideM();
         if (output_accum_ptr != nullptr) {
-          output_accum_ptr += batch_id * o_strideB;
+          output_accum_ptr += int64_t(batch_id * num_queries) * o_strideM();
         }
         q_start = 0;
         k_start = 0;
@@ -212,11 +200,11 @@ struct AttentionKernel {
       key_ptr += k_start * k_strideM + head_id * k_strideH;
       value_ptr += k_start * v_strideM + head_id * v_strideH;
       output_ptr += int64_t(q_start + query_start) * o_strideM() +
-          head_id * o_strideH;
+          head_id * head_dim_value;
 
       if (output_accum_ptr != nullptr) {
         output_accum_ptr += int64_t(q_start + query_start) * o_strideM() +
-            head_id * o_strideH;
+            head_id * head_dim_value;
       } else {
         // Accumulate directly in the destination buffer (eg for f32)
         output_accum_ptr = (accum_t*)output_ptr;
@@ -409,9 +397,6 @@ struct AttentionKernel {
 
   // Shared storage - depends on kernel params
   struct ScalingCoefs {
-//    cutlass::Array<accum_t, kQueriesPerBlock> m_prime;
-//    cutlass::Array<accum_t, kQueriesPerBlock> s_prime;
-//    cutlass::Array<accum_t, kQueriesPerBlock> mi;
   };
 
   struct SharedStorageEpilogueAtEnd : ScalingCoefs {
@@ -483,18 +468,9 @@ struct AttentionKernel {
 
     extern __shared__ char smem_buffer[];
     SharedStorage& shared_storage = *((SharedStorage*)smem_buffer);
- //   auto& m_prime = shared_storage.m_prime;
- //   auto& s_prime = shared_storage.s_prime;
     [[maybe_unused]] auto& si = shared_storage.after_mm0.si;
-//    auto& mi = shared_storage.mi;
 
     static_assert(kQueriesPerBlock < kNumWarpsPerBlock * kWarpSize, "");
-//    if (thread_id() < kQueriesPerBlock) {
-//      s_prime[thread_id()] = accum_t(0);
-//      m_prime[thread_id()] =
-//          -cutlass::platform::numeric_limits<accum_t>::infinity();
-//      mi[thread_id()] = -cutlass::platform::numeric_limits<accum_t>::infinity();
-//    }
     typename MM1::Mma::FragmentC accum_o;
     accum_o.clear();
 
@@ -522,8 +498,7 @@ struct AttentionKernel {
         };
 
     // Iterate through keys
-    #pragma unroll
-    for (int32_t iter_key_start = 0; iter_key_start < 256;
+    for (int32_t iter_key_start = 0; iter_key_start < p.num_keys;
          iter_key_start += kKeysPerBlock) {
       int32_t problem_size_0_m =
           cutlass::fast_min((int32_t)kQueriesPerBlock, p.num_queries);
@@ -633,33 +608,6 @@ struct AttentionKernel {
             },
             [&](int accum_m) {});
       }
-//      DISPATCH_BOOL(iter_key_start == 0, kIsFirst, ([&] {
-//                      DISPATCH_BOOL(
-//                          p.num_keys - iter_key_start >= kKeysPerBlock,
-//                          kFullColumns,
-//                          ([&] {
-//                            // Update `mi` from accum stored in registers
-//                            // Also updates `accum` with accum[i] <-
-//                            // exp(accum[i] * scale
-//                            // - mi)
-//                            MM0::ScalingCoefsUpdater::update<
-//                                kQueriesPerBlock,
-//                                kFullColumns,
-//                                kIsFirst,
-//                                kKeepOutputInRF>(
-//                                accum_o,
-//                                accum,
-//                                mi,
-//                                m_prime,
-//                                s_prime,
-//                                lane_id(),
-//                                thread_id(),
-//                                warp_id(),
-//                                p.num_keys - iter_key_start,
-//                                iteratorC_tile_offset,
-//                                1.0f / cutlass::fast_sqrt(float(p.head_dim)));
-//                          }));
-//                    }));
 
       // Output results to shared-memory
       int warp_idx_mn_0 = my_warp_id %
@@ -729,39 +677,6 @@ struct AttentionKernel {
 //                      using DefaultOp =
 //                          typename MM1::DefaultConfig::EpilogueOutputOp;
 //                      using ElementCompute = typename DefaultOp::ElementCompute;
-//                      using EpilogueOutputOp = typename cutlass::epilogue::
-//                          thread::MemoryEfficientAttentionNormalize<
-//                              typename cutlass::platform::conditional<
-//                                  kIsLast,
-//                                  output_t,
-//                                  output_accum_t>::type,
-//                              output_accum_t,
-//                              DefaultOp::kCount,
-//                              typename DefaultOp::ElementAccumulator,
-//                              ElementCompute,
-//                              kIsFirst,
-//                              kIsLast,
-//                              cutlass::Array<ElementCompute, kQueriesPerBlock>>;
-//                      using Epilogue = typename cutlass::epilogue::threadblock::
-//                          EpiloguePipelined<
-//                              typename DefaultEpilogue::Shape,
-//                              typename MM1::Mma::Operator,
-//                              DefaultEpilogue::kPartitionsK,
-//                              typename cutlass::platform::conditional<
-//                                  kIsLast,
-//                                  typename MM1::OutputTileIterator,
-//                                  typename MM1::OutputTileIteratorAccum>::type,
-//                              typename DefaultEpilogue::
-//                                  AccumulatorFragmentIterator,
-//                              typename DefaultEpilogue::WarpTileIterator,
-//                              typename DefaultEpilogue::SharedLoadIterator,
-//                              EpilogueOutputOp,
-//                              typename DefaultEpilogue::Padding,
-//                              DefaultEpilogue::kFragmentsPerIteration,
-//                              true, // IterationsUnroll
-//                              typename MM1::OutputTileIteratorAccum // Read
-//                                                                    // iterator
-//                              >;
 //
 //                      int col = blockN * MM1::Mma::Shape::kN;
 //                      auto source_iter = createOutputAccumIter(col);
@@ -770,13 +685,13 @@ struct AttentionKernel {
 //                          decltype(createOutputIter),
 //                          decltype(createOutputAccumIter)>::
 //                          apply(createOutputIter, createOutputAccumIter, col);
-//                      EpilogueOutputOp rescale(s_prime, m_prime);
-//                      Epilogue epilogue(
+//                      DefaultOp epilogue_op({1, 0});
+//                      DefaultEpilogue epilogue(
 //                          shared_storage.epilogue_shared_storage(),
 //                          thread_id(),
 //                          warp_id(),
 //                          lane_id());
-//                      epilogue(rescale, dest_iter, accum_o, source_iter);
+//                      epilogue(epilogue_op, dest_iter, accum_o, source_iter);
 //                    }));
 //              }));
 //          if (!kSingleValueIteration) {
@@ -793,37 +708,8 @@ struct AttentionKernel {
       using DefaultEpilogue = typename MM1::DefaultEpilogue;
       using DefaultOp = typename MM1::DefaultConfig::EpilogueOutputOp;
       using ElementCompute = typename DefaultOp::ElementCompute;
-//      using EpilogueOutputOp =
-//          typename cutlass::epilogue::thread::MemoryEfficientAttentionNormalize<
-//              output_t, // output
-//              output_accum_t, // source
-//              DefaultOp::kCount,
-//              typename DefaultOp::ElementAccumulator, // accum
-//              output_accum_t, // compute
-//              kIsFirst,
-//              kIsLast,
-//              cutlass::Array<ElementCompute, kQueriesPerBlock>>;
-//      using EpilogueOutputOp =
-//          typename cutlass::epilogue::thread::LinearCombination<
-//              scalar_t, 128 / cutlass::sizeof_bits<scalar_t>::value, accum_t, accum_t
-//          >;
-//      using Epilogue =
-//          typename cutlass::epilogue::threadblock::Epilogue<
-//              typename DefaultEpilogue::Shape,
-//              typename MM1::Mma::Operator,
-//              DefaultEpilogue::kPartitionsK,
-//              typename MM1::OutputTileIterator, // destination
-//              typename DefaultEpilogue::AccumulatorFragmentIterator,
-//              typename DefaultEpilogue::WarpTileIterator,
-//              typename DefaultEpilogue::SharedLoadIterator,
-//              EpilogueOutputOp,
-//              typename DefaultEpilogue::Padding,
-//              DefaultEpilogue::kFragmentsPerIteration,
-//              true // IterationsUnroll
-//              >;
       auto dest_iter = createOutputIter(0);
       DefaultOp epilogue_op({1, 0});
-//      EpilogueOutputOp rescale(s_prime, m_prime);
       DefaultEpilogue epilogue(
           shared_storage.epilogue_shared_storage(),
           thread_id(),
@@ -831,21 +717,6 @@ struct AttentionKernel {
           lane_id());
       epilogue(epilogue_op, dest_iter, accum_o);
     }
-
-//    // 7. Calculate logsumexp
-//    // To make the backward easier, we pad logsumexp with `inf`
-//    // this avoids a few bound checks, and is not more expensive during fwd
-//    static_assert(kQueriesPerBlock < kNumWarpsPerBlock * kWarpSize, "");
-//    if (p.logsumexp_ptr && thread_id() < kQueriesPerBlock) {
-//      auto lse_dim = ceil_div((int32_t)p.num_queries, kAlignLSE) * kAlignLSE;
-//      if (thread_id() < p.num_queries) {
-//        p.logsumexp_ptr[thread_id()] = accum_t(mi[thread_id()]) +
-//            cutlass::fast_log(accum_t(s_prime[thread_id()]));
-//      } else if (thread_id() < lse_dim) {
-//        p.logsumexp_ptr[thread_id()] =
-//            cutlass::platform::numeric_limits<accum_t>::infinity();
-//      }
-//    }
   }
 
   static CUTLASS_DEVICE int8_t lane_id() {
@@ -867,93 +738,3 @@ __global__ void __launch_bounds__(AK::kNumThreads, AK::kMinBlocksPerSm)
   }
   AK::attention_kernel(p);
 }
-
-template <typename AK>
-__global__ void __launch_bounds__(AK::kNumThreads, AK::kMinBlocksPerSm)
-    attention_kernel_batched(typename AK::Params params);
-
-#define _ATTENTION_KERNEL_FORWARD_BEGIN(...)                                  \
-  template <>                                                                 \
-  __global__ void __launch_bounds__(                                          \
-      __VA_ARGS__::kNumThreads, __VA_ARGS__::kMinBlocksPerSm)                 \
-      attention_kernel_batched<__VA_ARGS__>(typename __VA_ARGS__::Params p) { \
-    using Kernel = __VA_ARGS__;
-#define _ATTENTION_KERNEL_FORWARD_END() }
-
-#ifdef __CUDA_ARCH__
-#define __CUDA_ARCH_OR_ZERO__ __CUDA_ARCH__
-#else
-#define __CUDA_ARCH_OR_ZERO__ 0
-#endif
-
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD(              \
-    ARCH,                                                  \
-    SCALAR_T,                                              \
-    IS_ALIGNED,                                            \
-    QUERIES_PER_BLOCK,                                     \
-    KEYS_PER_BLOCK,                                        \
-    SINGLE_VALUE_ITER)                                     \
-  _ATTENTION_KERNEL_FORWARD_BEGIN(AttentionKernel<         \
-                                  SCALAR_T,                \
-                                  cutlass::arch::Sm##ARCH, \
-                                  IS_ALIGNED,              \
-                                  QUERIES_PER_BLOCK,       \
-                                  KEYS_PER_BLOCK,          \
-                                  SINGLE_VALUE_ITER>)      \
-  if (!p.advance_to_block()) {                             \
-    return;                                                \
-  }                                                        \
-  Kernel::attention_kernel(p);                             \
-  _ATTENTION_KERNEL_FORWARD_END();
-
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_DISABLED(              \
-    ARCH,                                                           \
-    SCALAR_T,                                                       \
-    IS_ALIGNED,                                                     \
-    QUERIES_PER_BLOCK,                                              \
-    KEYS_PER_BLOCK,                                                 \
-    SINGLE_VALUE_ITER)                                              \
-  _ATTENTION_KERNEL_FORWARD_BEGIN(AttentionKernel<                  \
-                                  SCALAR_T,                         \
-                                  cutlass::arch::Sm##ARCH,          \
-                                  IS_ALIGNED,                       \
-                                  QUERIES_PER_BLOCK,                \
-                                  KEYS_PER_BLOCK,                   \
-                                  SINGLE_VALUE_ITER>)               \
-  printf(                                                           \
-      "FATAL: this function is for sm%d, but was built for sm%d\n", \
-      int(ARCH),                                                    \
-      int(__CUDA_ARCH_OR_ZERO__));                                  \
-  _ATTENTION_KERNEL_FORWARD_END();
-
-// All kernels are disabled by default
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM50(...) \
-  INSTANTIATE_ATTENTION_KERNEL_FORWARD_DISABLED(50, __VA_ARGS__)
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM70(...) \
-  INSTANTIATE_ATTENTION_KERNEL_FORWARD_DISABLED(70, __VA_ARGS__)
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM75(...) \
-  INSTANTIATE_ATTENTION_KERNEL_FORWARD_DISABLED(75, __VA_ARGS__)
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM80(...) \
-  INSTANTIATE_ATTENTION_KERNEL_FORWARD_DISABLED(80, __VA_ARGS__)
-
-// Enable the right one based on __CUDA_ARCH__
-#ifndef __CUDA_ARCH__
-#elif __CUDA_ARCH__ < 500
-#error "Need cuda arch at least 5.0"
-#elif __CUDA_ARCH__ < 700
-#undef INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM50
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM50(...) \
-  INSTANTIATE_ATTENTION_KERNEL_FORWARD(50, __VA_ARGS__)
-#elif __CUDA_ARCH__ < 750
-#undef INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM70
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM70(...) \
-  INSTANTIATE_ATTENTION_KERNEL_FORWARD(70, __VA_ARGS__)
-#elif __CUDA_ARCH__ < 800
-#undef INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM75
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM75(...) \
-  INSTANTIATE_ATTENTION_KERNEL_FORWARD(75, __VA_ARGS__)
-#elif __CUDA_ARCH__ >= 800
-#undef INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM80
-#define INSTANTIATE_ATTENTION_KERNEL_FORWARD_SM80(...) \
-  INSTANTIATE_ATTENTION_KERNEL_FORWARD(80, __VA_ARGS__)
-#endif
