@@ -589,6 +589,16 @@ struct AttentionKernel {
               (tb_tile_offset.n() * MM0::Mma::WarpCount::kN) +
                   (my_warp_id / MM0::Mma::WarpCount::kM)};
 
+      auto lane_offset = MM0::ScalingCoefsUpdater::get_lane_offset(
+          lane_id(), warp_id(), iteratorC_tile_offset);
+      MM0::ScalingCoefsUpdater::iterateRows(
+          lane_offset,
+          [&](int accum_m) {},
+          [&](int accum_m, int accum_n, int idx) {
+            accum[idx] *= p.scale;
+          },
+          [&](int accum_m) {});
+
       // Mask out last if causal
       if (p.causal && p.num_keys - iter_key_start <= kKeysPerBlock) {
         auto query_start = blockIdx.x * kQueriesPerBlock;

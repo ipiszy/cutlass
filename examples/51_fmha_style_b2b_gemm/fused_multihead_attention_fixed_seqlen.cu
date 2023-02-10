@@ -464,8 +464,7 @@ private:
     // Set scalors for the mha example
     //
 
-//    options.alpha0 = 1.0f / sqrt(float(options.head_size));
-    options.alpha0 = 1.0f;
+    options.alpha0 = 1.0f / sqrt(float(options.head_size));
     options.alpha1 = 1.0f;
     options.beta = 0;
 
