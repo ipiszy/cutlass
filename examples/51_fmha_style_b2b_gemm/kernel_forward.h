@@ -60,6 +60,7 @@
 #include "find_default_mma.h"
 #include "gemm_kernel_utils.h"
 #include "mma_from_smem.h"
+#include "transform/tile_smem_loader.h"
 
 #include <inttypes.h>
 
@@ -120,6 +121,7 @@ struct AttentionKernel {
     scalar_t* query_ptr; // [num_queries, num_heads, head_dim]
     scalar_t* key_ptr;   // [num_keys, num_heads, head_dim]
     scalar_t* value_ptr; // [num_keys, num_heads, head_dim_value]
+    scalar_t* attn_bias_ptr = nullptr; // [num_heads, num_queries, num_keys]
     int32_t* cu_seqlens_q_ptr = nullptr;
     int32_t* cu_seqlens_k_ptr = nullptr;
 
@@ -143,15 +145,18 @@ struct AttentionKernel {
     int32_t q_strideM;
     int32_t k_strideM;
     int32_t v_strideM;
+    int32_t bias_strideM;
 
     // Everything below is only used in `advance_to_block`
     // and shouldn't use registers
     int32_t q_strideH;
     int32_t k_strideH;
     int32_t v_strideH;
+    int32_t bias_strideH;
     int64_t q_strideB;
     int64_t k_strideB;
     int64_t v_strideB;
+    int32_t bias_strideB;
     int32_t num_batches;
     int32_t num_heads;
 
@@ -201,6 +206,9 @@ struct AttentionKernel {
       value_ptr += k_start * v_strideM + head_id * v_strideH;
       output_ptr += int64_t(q_start + query_start) * o_strideM() +
           head_id * head_dim_value;
+      if (attn_bias_ptr != nullptr) {
+        attn_bias_ptr += (batch_id * bias_strideB) + (head_id * bias_strideH);
+      }
 
       if (output_accum_ptr != nullptr) {
         output_accum_ptr += int64_t(q_start + query_start) * o_strideM() +
@@ -227,6 +235,7 @@ struct AttentionKernel {
       query_ptr = warp_uniform(query_ptr);
       key_ptr = warp_uniform(key_ptr);
       value_ptr = warp_uniform(value_ptr);
+      attn_bias_ptr = warp_uniform(attn_bias_ptr);
       output_ptr = warp_uniform(output_ptr);
       output_accum_ptr = warp_uniform(output_accum_ptr);
       logsumexp_ptr = warp_uniform(logsumexp_ptr);
@@ -306,6 +315,14 @@ struct AttentionKernel {
                 MmaCore::WarpCount::kK ==
             kNumWarpsPerBlock,
         "");
+
+    // used for efficient load of bias tile Bij from global to shared memory
+    using BiasLoader = TileSmemLoader<
+        scalar_t,
+        cutlass::MatrixShape<kQueriesPerBlock, kKeysPerBlock>,
+        MmaCore::kThreads,
+        // input restriction: kv_len has to be a multiple of this value
+        128 / cutlass::sizeof_bits<scalar_t>::value>;
 
     // Epilogue to store to shared-memory in a format that we can use later for
     // the second matmul
@@ -402,7 +419,10 @@ struct AttentionKernel {
   struct SharedStorageEpilogueAtEnd : ScalingCoefs {
     struct SharedStorageAfterMM0 {
       // Everything here might be overwritten during MM0
-      typename MM0::AccumulatorSharedStorage si;
+      union {
+        typename MM0::BiasLoader::SmemTile bias;
+        typename MM0::AccumulatorSharedStorage si;
+      };
       typename MM1::SharedStorageMM1 mm1;
     };
 
@@ -421,7 +441,10 @@ struct AttentionKernel {
   struct SharedStorageEpilogueInLoop : ScalingCoefs {
     struct SharedStorageAfterMM0 {
       // Everything here might be overwritten during MM0
-      typename MM0::AccumulatorSharedStorage si;
+      union {
+        typename MM0::BiasLoader::SmemTile bias;
+        typename MM0::AccumulatorSharedStorage si;
+      };
       typename MM1::SharedStorageMM1 mm1;
       typename MM1::DefaultEpilogue::SharedStorage epilogue;
     };
@@ -469,6 +492,7 @@ struct AttentionKernel {
     extern __shared__ char smem_buffer[];
     SharedStorage& shared_storage = *((SharedStorage*)smem_buffer);
     [[maybe_unused]] auto& si = shared_storage.after_mm0.si;
+    const uint32_t query_start = blockIdx.x * kQueriesPerBlock;
 
     static_assert(kQueriesPerBlock < kNumWarpsPerBlock * kWarpSize, "");
     typename MM1::Mma::FragmentC accum_o;
@@ -589,15 +613,40 @@ struct AttentionKernel {
               (tb_tile_offset.n() * MM0::Mma::WarpCount::kN) +
                   (my_warp_id / MM0::Mma::WarpCount::kM)};
 
-      auto lane_offset = MM0::ScalingCoefsUpdater::get_lane_offset(
-          lane_id(), warp_id(), iteratorC_tile_offset);
-      MM0::ScalingCoefsUpdater::iterateRows(
-          lane_offset,
-          [&](int accum_m) {},
-          [&](int accum_m, int accum_n, int idx) {
-            accum[idx] *= p.scale;
-          },
-          [&](int accum_m) {});
+      // multiply by scaling factor
+      accum =
+          cutlass::multiplies<typename MM0::Mma::FragmentC>()(p.scale, accum);
+
+      // apply attention bias if applicable
+      if (p.attn_bias_ptr != nullptr) {
+        // load bias tile Bij into shared memory
+        typename MM0::BiasLoader::GmemTileIterator bias_iter(
+            {cutlass::layout::RowMajor(p.bias_strideM)},
+            // attn_bias_pointer points to matrix of size (n_queries, n_keys)
+            // for the relevant batch_id and head_id
+            p.attn_bias_ptr + query_start * p.bias_strideM + iter_key_start,
+            {problem_size_0_m, problem_size_0_n},
+            thread_id());
+        cutlass::TensorRef<scalar_t, cutlass::layout::RowMajor> bias_tensor_ref(
+            shared_storage.after_mm0.bias.data(),
+            cutlass::layout::RowMajor(MM0::ThreadblockShape::kN));
+        typename MM0::BiasLoader::SmemTileIterator smem_tile_iter(
+            bias_tensor_ref, thread_id());
+        MM0::BiasLoader::load(bias_iter, smem_tile_iter);
+
+        // Pij += Bij, Pij is in register fragment and Bij is in shared memory
+        auto lane_offset = MM0::ScalingCoefsUpdater::get_lane_offset(
+            lane_id(), warp_id(), iteratorC_tile_offset);
+        MM0::ScalingCoefsUpdater::iterateRows(
+            lane_offset,
+            [&](int accum_m) {},
+            [&](int accum_m, int accum_n, int idx) {
+              if (accum_m < problem_size_0_m && accum_n < problem_size_0_n) {
+                accum[idx] += bias_tensor_ref.at({accum_m, accum_n});
+              }
+            },
+            [&](int accum_m) {});
+      }
 
       // Mask out last if causal
       if (p.causal && p.num_keys - iter_key_start <= kKeysPerBlock) {

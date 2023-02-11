@@ -152,6 +152,7 @@ struct Options {
   bool help;
   bool error;
   bool reference_check;
+  bool has_bias;
   bool use_mask;
   bool causal;
 
@@ -191,6 +192,7 @@ struct Options {
     head_size_v(64),
     seq_length(1024),
     seq_length_kv(1024),
+    has_bias(false),
     use_mask(false),
     iterations(20),
     causal(false)
@@ -212,6 +214,7 @@ struct Options {
     cmd.get_cmd_line_argument("head_size_v", head_size_v, head_size);
     cmd.get_cmd_line_argument("seq_length", seq_length, 256);
     cmd.get_cmd_line_argument("seq_length_kv", seq_length_kv, seq_length);
+    cmd.get_cmd_line_argument("has_bias", has_bias, false);
     cmd.get_cmd_line_argument("use_mask", use_mask, false);
     cmd.get_cmd_line_argument("iterations", iterations, 20);
     cmd.get_cmd_line_argument("reference-check", reference_check, true);
@@ -272,6 +275,7 @@ struct Options {
       << "  --head_size_v=<int>         Head size in multi-head attention for V (default: --head_size_v=head_size)\n"
       << "  --seq_length=<int>          Sequence length in multi-head attention for Q (default: --seq_length=1024)\n"
       << "  --seq_length_kv=<int>       Sequence length in multi-head attention for K/V (default: --seq_length_kv=seq_length)\n"
+      << "  --has_bias=<bool>           If true, adds bias after the first Gemm.\n"
       << "  --use_mask=<bool>           If true, performs padding-like masking in softmax.\n"
       << "  --iterations=<int>          Number of profiling iterations to perform.\n"
       << "  --reference-check=<bool>    If true, performs reference check.\n"
@@ -296,14 +300,11 @@ struct Options {
         }
         // P <- Q . K_t
         fops += 2 * num_cols0 * problem0.k();
-        // P <- exp(P - max(P))
-        fops += 2 * num_cols0;
-        // S <- sum(P)
-        fops += num_cols0 - 1;
+        if (has_bias) {
+          fops += num_cols0;
+        }
         // O <- P . V
         fops += 2 * num_cols0 * problem1.n();
-        // O <- O / S
-        fops += num_cols0 * problem1.n();
       }
     }
 
@@ -311,7 +312,45 @@ struct Options {
   }
 };
 
+template <
+  typename DstElement,
+  typename DstLayout,
+  typename SrcElement,
+  typename SrcLayout>
+struct TensorCopyForEachFunc {
+  /// View type
+  using DstTensorView = cutlass::TensorView<DstElement, DstLayout>;
+  using SrcTensorView = cutlass::TensorView<SrcElement, SrcLayout>;
 
+  /// Coordinate in tensor's index space
+  using TensorCoord = typename SrcTensorView::TensorCoord;
+
+  /// Parameters structure
+  struct Params {
+
+    //
+    // Data members
+    //
+    DstTensorView dst_view;
+    SrcTensorView src_view;
+
+    //
+    // Methods
+    //
+    Params(DstTensorView dst_view_, SrcTensorView src_view_):
+      dst_view(dst_view_), src_view(src_view_) {}
+  };
+
+  Params params;
+
+  CUTLASS_DEVICE
+  TensorCopyForEachFunc(Params const &params): params(params) {}
+
+  CUTLASS_DEVICE
+  void operator()(TensorCoord const &coord) {
+    params.dst_view.at(coord) = DstElement(params.src_view.at(coord));
+  }
+};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -325,6 +364,7 @@ public:
 
   using ElementQ = typename Attention::scalar_t;
   using ElementK = typename Attention::scalar_t;
+  using ElementBias = typename Attention::scalar_t;
   using ElementP = typename Attention::accum_t;
   using ElementAccumulator = typename Attention::accum_t;
   using ElementV = typename Attention::scalar_t;
@@ -338,6 +378,7 @@ public:
 
   using LayoutQ = cutlass::layout::RowMajor;
   using LayoutK = cutlass::layout::ColumnMajor;
+  using LayoutBias = cutlass::layout::RowMajor;
   using LayoutP = cutlass::layout::RowMajor;
   using LayoutV = cutlass::layout::RowMajor;
   using LayoutO = cutlass::layout::RowMajor;
@@ -355,6 +396,7 @@ private:
   /// Initialization
   cutlass::Distribution::Kind init_Q;
   cutlass::Distribution::Kind init_K;
+  cutlass::Distribution::Kind init_Bias;
   cutlass::Distribution::Kind init_P;
   cutlass::Distribution::Kind init_V;
   cutlass::Distribution::Kind init_O;
@@ -368,10 +410,12 @@ private:
   std::vector<int64_t> offset_K;
   std::vector<int64_t> offset_P;
   std::vector<int64_t> offset_V;
+  std::vector<int64_t> offset_Bias;
   std::vector<int64_t> offset_O;
 
   std::vector<int64_t> ldq_host;
   std::vector<int64_t> ldk_host;
+  std::vector<int64_t> ldbias_host;
   std::vector<int64_t> ldp_host;
   std::vector<int64_t> ldv_host;
   std::vector<int64_t> ldo_host;
@@ -379,6 +423,7 @@ private:
 
   cutlass::DeviceAllocation<int64_t> ldq;
   cutlass::DeviceAllocation<int64_t> ldk;
+  cutlass::DeviceAllocation<int64_t> ldbias;
   cutlass::DeviceAllocation<int64_t> ldp;
   cutlass::DeviceAllocation<int64_t> ldv;
   cutlass::DeviceAllocation<int64_t> ldo;
@@ -386,19 +431,21 @@ private:
 
   cutlass::DeviceAllocation<ElementQ> block_Q;
   cutlass::DeviceAllocation<ElementK> block_K;
+  cutlass::DeviceAllocation<ElementBias> block_Bias;
   cutlass::DeviceAllocation<ElementP> block_P;
   cutlass::DeviceAllocation<ElementV> block_V;
   cutlass::DeviceAllocation<ElementO> block_O;
   cutlass::DeviceAllocation<ElementNorm> block_Norm;
   cutlass::DeviceAllocation<ElementSum> block_Sum;
 
-  cutlass::DeviceAllocation<int64_t> offset_P_Device;
+//  cutlass::DeviceAllocation<int64_t> offset_P_Device;
 
-  cutlass::DeviceAllocation<ElementQ *> ptr_Q;
-  cutlass::DeviceAllocation<ElementK *> ptr_K;
-  cutlass::DeviceAllocation<ElementP *> ptr_P;
-  cutlass::DeviceAllocation<ElementV *> ptr_V;
-  cutlass::DeviceAllocation<ElementO *> ptr_O;
+//  cutlass::DeviceAllocation<ElementQ *> ptr_Q;
+//  cutlass::DeviceAllocation<ElementK *> ptr_K;
+//  cutlass::DeviceAllocation<ElementO *> ptr_Bias;
+//  cutlass::DeviceAllocation<ElementP *> ptr_P;
+//  cutlass::DeviceAllocation<ElementV *> ptr_V;
+//  cutlass::DeviceAllocation<ElementO *> ptr_O;
 
 public:
 
@@ -410,12 +457,13 @@ public:
     Options &options_,
     cutlass::Distribution::Kind init_Q_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_K_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_Bias_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_P_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_V_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_O_ = cutlass::Distribution::Uniform,
     uint32_t seed_ = 3080
   ):
-    options(options_), init_Q(init_Q_), init_K(init_K_), init_P(init_P_), init_V(init_V_), init_O(init_O_), seed(seed_) { }
+    options(options_), init_Q(init_Q_), init_K(init_K_), init_P(init_P_), init_V(init_V_), init_Bias(init_Bias_), init_O(init_O_), seed(seed_) { }
 
   int problem_count() const {
     return (options.head_number * options.batch_size);
@@ -477,12 +525,14 @@ private:
 
     int64_t total_elements_Q = 0;
     int64_t total_elements_K = 0;
+    int64_t total_elements_Bias = 0;
     int64_t total_elements_P = 0;
     int64_t total_elements_V = 0;
     int64_t total_elements_O = 0;
 
     ldq_host.resize(problem_count());
     ldk_host.resize(problem_count());
+    ldbias_host.resize(problem_count());
     ldp_host.resize(problem_count());
     ldv_host.resize(problem_count());
     ldo_host.resize(problem_count());
@@ -493,7 +543,7 @@ private:
     // M = sequence length
     // H = num_heads
     // K = embedding size per head
-    int64_t batch_offset_Q, batch_offset_K, batch_offset_V, batch_offset_O;
+    int64_t batch_offset_Q, batch_offset_K, batch_offset_V, batch_offset_Bias, batch_offset_O;
 
     for (int32_t b = 0; b < options.batch_size; ++b) {
       batch_offset_Q = total_elements_Q;
@@ -508,6 +558,7 @@ private:
 
         ldq_host.at(i) = LayoutQ::packed({problem0.m(), options.head_number * problem0.k()}).stride(0);
         ldk_host.at(i) = LayoutK::packed({options.head_number * problem0.k(), problem0.n()}).stride(0);
+        ldbias_host.at(i) = LayoutO::packed({problem0.m(), problem0.n()}).stride(0);
         ldp_host.at(i) = LayoutP::packed({problem0.m(), problem0.n()}).stride(0);
         ldv_host.at(i) = LayoutV::packed({problem1.k(), options.head_number * problem1.n()}).stride(0);
         ldo_host.at(i) = LayoutO::packed({problem1.m(), options.head_number * problem1.n()}).stride(0);
@@ -517,18 +568,21 @@ private:
 
         offset_Q.push_back(batch_offset_Q + h * problem0.k());
         offset_K.push_back(batch_offset_K + h * problem0.k());
+        offset_Bias.push_back(total_elements_Bias);
         offset_P.push_back(total_elements_P);
         offset_V.push_back(batch_offset_V + h * problem0.k());
         offset_O.push_back(batch_offset_O + h * problem1.n());
 
         int64_t elements_Q = problem0.m() * problem0.k();
         int64_t elements_K = problem0.k() * problem0.n();
+        int64_t elements_Bias = problem0.m() * problem0.n();
         int64_t elements_P = problem0.m() * problem0.n();
         int64_t elements_V = problem1.k() * problem1.n();
         int64_t elements_O = problem1.m() * problem1.n();
 
         total_elements_Q += elements_Q;
         total_elements_K += elements_K;
+        total_elements_Bias += elements_Bias;
         total_elements_P += elements_P;
         total_elements_V += elements_V;
         total_elements_O += elements_O;
@@ -547,6 +601,7 @@ private:
 
     ldq.reset(problem_count());
     ldk.reset(problem_count());
+    ldbias.reset(problem_count());
     ldp.reset(problem_count());
     ldv.reset(problem_count());
     ldo.reset(problem_count());
@@ -556,6 +611,7 @@ private:
     ldk.copy_from_host(ldk_host.data());
     ldp.copy_from_host(ldp_host.data());
     ldv.copy_from_host(ldv_host.data());
+    ldbias.copy_from_host(ldbias_host.data());
     ldo.copy_from_host(ldo_host.data());
     seqlen.copy_from_host(seqlen_host.data());
 
@@ -565,45 +621,51 @@ private:
 
     block_Q.reset(total_elements_Q);
     block_K.reset(total_elements_K);
+    block_Bias.reset(total_elements_Bias);
     block_P.reset(total_elements_P);
     block_V.reset(total_elements_V);
     block_O.reset(total_elements_O);
 
-    offset_P_Device.reset(problem_count());
+//    offset_P_Device.reset(problem_count());
 
-    // sync offset with device
-    cutlass::device_memory::copy_to_device(offset_P_Device.get(), offset_P.data(), offset_P.size());
+//    // sync offset with device
+//    cutlass::device_memory::copy_to_device(offset_P_Device.get(), offset_P.data(), offset_P.size());
 
-    std::vector<ElementQ *> ptr_Q_host(problem_count());
-    std::vector<ElementK *> ptr_K_host(problem_count());
-    std::vector<ElementP *> ptr_P_host(problem_count());
-    std::vector<ElementV *> ptr_V_host(problem_count());
-    std::vector<ElementO *> ptr_O_host(problem_count());
-    std::vector<ElementNorm *> ptr_norm_host(problem_count());
-    std::vector<ElementSum *> ptr_sum_host(problem_count());
+//    std::vector<ElementQ *> ptr_Q_host(problem_count());
+//    std::vector<ElementK *> ptr_K_host(problem_count());
+//    std::vector<ElementO *> ptr_Bias_host(problem_count());
+//    std::vector<ElementP *> ptr_P_host(problem_count());
+//    std::vector<ElementV *> ptr_V_host(problem_count());
+//    std::vector<ElementO *> ptr_O_host(problem_count());
+//    std::vector<ElementNorm *> ptr_norm_host(problem_count());
+//    std::vector<ElementSum *> ptr_sum_host(problem_count());
+//
+//    for (int32_t i = 0; i < problem_count(); ++i) {
+//      ptr_Q_host.at(i) = block_Q.get() + offset_Q.at(i);
+//      ptr_K_host.at(i) = block_K.get() + offset_K.at(i);
+//      ptr_Bias_host.at(i) = block_Bias.get() + offset_Bias.at(i);
+//      ptr_P_host.at(i) = block_P.get() + offset_P.at(i);
+//      ptr_V_host.at(i) = block_V.get() + offset_V.at(i);
+//      ptr_O_host.at(i) = block_O.get() + offset_O.at(i);
+//    }
 
-    for (int32_t i = 0; i < problem_count(); ++i) {
-      ptr_Q_host.at(i) = block_Q.get() + offset_Q.at(i);
-      ptr_K_host.at(i) = block_K.get() + offset_K.at(i);
-      ptr_P_host.at(i) = block_P.get() + offset_P.at(i);
-      ptr_V_host.at(i) = block_V.get() + offset_V.at(i);
-      ptr_O_host.at(i) = block_O.get() + offset_O.at(i);
-    }
-
-    ptr_Q.reset(problem_count());
-    ptr_Q.copy_from_host(ptr_Q_host.data());
-
-    ptr_K.reset(problem_count());
-    ptr_K.copy_from_host(ptr_K_host.data());
-
-    ptr_P.reset(problem_count());
-    ptr_P.copy_from_host(ptr_P_host.data());
-
-    ptr_V.reset(problem_count());
-    ptr_V.copy_from_host(ptr_V_host.data());
-
-    ptr_O.reset(problem_count());
-    ptr_O.copy_from_host(ptr_O_host.data());
+//    ptr_Q.reset(problem_count());
+//    ptr_Q.copy_from_host(ptr_Q_host.data());
+//
+//    ptr_K.reset(problem_count());
+//    ptr_K.copy_from_host(ptr_K_host.data());
+//
+//    ptr_Bias.reset(problem_count());
+//    ptr_Bias.copy_from_host(ptr_Bias_host.data());
+//
+//    ptr_P.reset(problem_count());
+//    ptr_P.copy_from_host(ptr_P_host.data());
+//
+//    ptr_V.reset(problem_count());
+//    ptr_V.copy_from_host(ptr_V_host.data());
+//
+//    ptr_O.reset(problem_count());
+//    ptr_O.copy_from_host(ptr_O_host.data());
 
     //
     // Initialize the problems of the workspace
@@ -612,7 +674,7 @@ private:
     initialize_tensor_(block_Q.get(), total_elements_Q, init_Q, seed + 1);
     initialize_tensor_(block_K.get(), total_elements_K, init_K, seed + 2);
     initialize_tensor_(block_V.get(), total_elements_V, init_V, seed + 3);
-
+    initialize_tensor_(block_Bias.get(), total_elements_Bias, init_Bias, seed + 4);
   }
 
   template<typename Element>
@@ -657,6 +719,7 @@ private:
       MatrixCoord extent_Q{problem0.m(), problem0.k()};
       MatrixCoord extent_K{problem0.k(), problem0.n()};
       MatrixCoord extent_P{problem0.m(), problem0.n()};
+      MatrixCoord extent_Bias{problem0.m(), problem0.n()};
       MatrixCoord extent_V{problem1.k(), problem1.n()};
       MatrixCoord extent_O{problem1.m(), problem1.n()};
 
@@ -672,6 +735,7 @@ private:
         LayoutK layout_K(ldk_host.at(i));
         LayoutP layout_P(ldp_host.at(i));
         LayoutV layout_V(ldv_host.at(i));
+        LayoutBias layout_Bias(ldbias_host.at(i));
 
         cutlass::TensorView<ElementQ, LayoutQ> view_Q(block_Q.get() + offset_Q.at(i), layout_Q, extent_Q);
         cutlass::TensorView<ElementK, LayoutK> view_K(block_K.get() + offset_K.at(i), layout_K, extent_K);
@@ -680,6 +744,15 @@ private:
 
         cutlass::DeviceAllocation<ElementP>    block_Ref_P(layout_P.capacity(extent_P));
         cutlass::TensorView<ElementP, LayoutP> view_Ref_P_device(block_Ref_P.get(), layout_P, extent_P);
+
+        cutlass::TensorView<ElementBias, LayoutBias> view_Bias(block_Bias.get() + offset_Bias.at(i), layout_Bias, extent_Bias);
+        cutlass::DeviceAllocation<ElementP>    block_BiasAccum(layout_Bias.capacity(extent_Bias));
+        cutlass::TensorView<ElementP, LayoutBias> view_BiasAccum(block_BiasAccum.get(), layout_Bias, extent_Bias);
+        using TensorCopyFunc = TensorCopyForEachFunc<ElementP, LayoutBias, ElementBias, LayoutBias>;
+        using TensorCopyParams = typename TensorCopyFunc::Params;
+        cutlass::reference::device::TensorForEach<TensorCopyFunc, 2 /* rank */, TensorCopyParams>(
+          extent_Bias, TensorCopyParams(view_BiasAccum, view_Bias)
+        );
 
         // Reference GEMM
         cutlass::reference::device::GemmComplex<
@@ -695,7 +768,7 @@ private:
           view_K,
           Attention::MM0::Mma::kTransformB,
           ElementAccumulator(options.beta),
-          view_Ref_P_device,
+          (options.has_bias ? view_BiasAccum : view_Ref_P_device),
           view_Ref_P_device,
           ElementAccumulator(0)
         );
@@ -768,6 +841,9 @@ public:
       p.query_ptr = block_Q.get();
       p.key_ptr = block_K.get();
       p.value_ptr = block_V.get();
+      if (options.has_bias) {
+        p.attn_bias_ptr = block_Bias.get();
+      }
       p.logsumexp_ptr = nullptr; // Only needed for bw
       p.output_accum_ptr = nullptr;
       if (Attention::kNeedsOutputAccumulatorBuffer) {
@@ -795,12 +871,17 @@ public:
       p.q_strideH = options.head_size;
       p.k_strideH = options.head_size;
       p.v_strideH = options.head_size_v;
+      p.bias_strideH = int32_t(options.problem_sizes0.at(0).m()) * int32_t(options.problem_sizes0.at(0).n());
+
       p.q_strideM = int32_t(ldq_host[0]);
       p.k_strideM = int32_t(ldk_host[0]);
       p.v_strideM = int32_t(ldv_host[0]);
+      p.bias_strideM = int32_t(options.problem_sizes0.at(0).n());
+
       p.q_strideB = p.q_strideM * options.seq_length;
       p.k_strideB = p.k_strideM * options.seq_length_kv;
       p.v_strideB = p.v_strideM * options.seq_length_kv;
+      p.bias_strideB = p.bias_strideH * options.head_number;
     }
 
     // launch kernel :)
@@ -814,6 +895,7 @@ public:
       return result;
     }
     kernel_fn<<<p.getBlocksGrid(), p.getThreadsGrid(), smem_bytes>>>(p);
+    std::cout << "finish FMHA kernel" << std::endl;
 
     // Wait for completion
     result.error = cudaDeviceSynchronize();
@@ -829,7 +911,9 @@ public:
     result.passed = true;
 
     if (options.reference_check) {
+      std::cout << "before verification" << std::endl;
       result.passed = verify_();
+      std::cout << "finish verification" << std::endl;
     }
 
     //
@@ -947,6 +1031,7 @@ int run_attention(Options& options) {
 
   TestbedAttention<Attention> testbed(options);
 
+  std::cout << "Before profile.\n";
   Result result = testbed.profile();
   if (!result.passed) {
     std::cout << "Profiling CUTLASS attention has failed.\n";
