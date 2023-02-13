@@ -123,13 +123,13 @@ struct RandomGaussianFunc {
     /// Construction of Gaussian RNG functor.
     Params(
       uint64_t seed_ = 0,
-      Element mean_ = 0, 
+      Element mean_ = 0,
       Element stddev_ = 1,
       int int_scale_ = -1
     ):
-      seed(seed_), 
-      mean(static_cast<FloatType>(mean_)), 
-      stddev(static_cast<FloatType>(stddev_)), 
+      seed(seed_),
+      mean(static_cast<FloatType>(mean_)),
+      stddev(static_cast<FloatType>(stddev_)),
       int_scale(int_scale_) {
 
       float_scale_up = FloatType(IntType(1) << int_scale);
@@ -210,13 +210,13 @@ struct RandomGaussianFunc<complex<Real>> {
     /// Construction of Gaussian RNG functor.
     Params(
       uint64_t seed_ = 0,
-      Real mean_ = 0, 
+      Real mean_ = 0,
       Real stddev_ = 1,
       int int_scale_ = -1
     ):
-      seed(seed_), 
-      mean(static_cast<FloatType>(mean_)), 
-      stddev(static_cast<FloatType>(stddev_)), 
+      seed(seed_),
+      mean(static_cast<FloatType>(mean_)),
+      stddev(static_cast<FloatType>(stddev_)),
       int_scale(int_scale_) {
 
       float_scale_up = FloatType(IntType(1) << int_scale);
@@ -354,10 +354,10 @@ void TensorFillRandomGaussian(
   uint64_t seed,                          ///< seed for RNG
   Element mean = Element(0),              ///< Gaussian distribution's mean
   Element stddev = Element(1),            ///< Gaussian distribution's standard deviation
-  int bits = -1) {                        ///< If non-negative, specifies number of fractional bits that 
+  int bits = -1) {                        ///< If non-negative, specifies number of fractional bits that
                                           ///  are not truncated to zero. Permits reducing precision of
                                           ///  data.
-  
+
   using RandomFunc = detail::RandomGaussianFunc<Element>;
   using Func = detail::TensorFillRandomGaussianFunc<Element, Layout>;
   using Params = typename Func::Params;
@@ -378,10 +378,10 @@ void BlockFillRandomGaussian(
   uint64_t seed,                              ///< seed for RNG
   typename RealType<Element>::Type mean,      ///< Gaussian distribution's mean
   typename RealType<Element>::Type stddev,    ///< Gaussian distribution's standard deviation
-  int bits = -1) {                            ///< If non-negative, specifies number of fractional bits that 
+  int bits = -1) {                            ///< If non-negative, specifies number of fractional bits that
                                               ///  are not truncated to zero. Permits reducing precision of
                                               ///  data.
-  
+
   using RandomFunc = detail::RandomGaussianFunc<Element>;
 
   typename RandomFunc::Params params(seed, mean, stddev, bits);
@@ -395,7 +395,7 @@ void BlockFillRandomGaussian(
 namespace detail {
 
 /// Computes a random Gaussian distribution
-template <typename Element>                ///< Element type 
+template <typename Element>                ///< Element type
 struct RandomUniformFunc {
 
   using FloatType = typename std::conditional<
@@ -432,13 +432,13 @@ struct RandomUniformFunc {
 
     /// Construction of Gaussian RNG functor.
     Params(
-      uint64_t seed_ = 0, 
+      uint64_t seed_ = 0,
       Element max_ = 1,
       Element min = 0,
       int int_scale_ = -1
     ):
-      seed(seed_), 
-      range(static_cast<FloatType>(max_ - min)), 
+      seed(seed_),
+      range(static_cast<FloatType>(max_ - min)),
       max(static_cast<FloatType>(max_)),
       int_scale(int_scale_) {
 
@@ -534,14 +534,14 @@ struct RandomUniformFunc<complex<Real>> {
 
     /// Construction of Gaussian RNG functor.
     Params(
-      uint64_t seed_ = 0, 
+      uint64_t seed_ = 0,
       FloatType max = 1,
       FloatType min_ = 0,
       int int_scale_ = -1
     ):
-      seed(seed_), 
-      range(static_cast<FloatType>(max - min_)), 
-      min(static_cast<FloatType>(min_)), 
+      seed(seed_),
+      range(static_cast<FloatType>(max - min_)),
+      min(static_cast<FloatType>(min_)),
       int_scale(int_scale_) {
 
       float_scale_up = FloatType(IntType(1) << int_scale);
@@ -686,10 +686,10 @@ void TensorFillRandomUniform(
   uint64_t seed,                          ///< seed for RNG
   Element max = Element(1),               ///< upper bound of distribution
   Element min = Element(0),               ///< lower bound for distribution
-  int bits = -1) {                        ///< If non-negative, specifies number of fractional bits that 
+  int bits = -1) {                        ///< If non-negative, specifies number of fractional bits that
                                           ///  are not truncated to zero. Permits reducing precision of
-                                          ///  data.                 
-  
+                                          ///  data.
+
   using RandomFunc = detail::RandomUniformFunc<Element>;
   using Func = detail::TensorFillRandomUniformFunc<Element, Layout>;
   using Params = typename Func::Params;
@@ -712,12 +712,12 @@ void BlockFillRandomUniform(
   uint64_t seed,                          ///< seed for RNG
   typename RealType<Element>::Type max,   ///< upper bound of distribution
   typename RealType<Element>::Type min,   ///< lower bound for distribution
-  int bits = -1) {                        ///< If non-negative, specifies number of fractional bits that 
+  int bits = -1) {                        ///< If non-negative, specifies number of fractional bits that
                                           ///  are not truncated to zero. Permits reducing precision of
-                                          ///  data.                 
-  
+                                          ///  data.
+
   using RandomFunc = detail::RandomUniformFunc<Element>;
-  
+
   typename RandomFunc::Params params(seed, max, min, bits);
 
   BlockForEach<Element, RandomFunc>(ptr, capacity, params);
@@ -728,7 +728,7 @@ void BlockFillRandomUniform(
 
 namespace detail {
 
-/// Computes a random sparse meta 
+/// Computes a random sparse meta
 template <typename Element>               ///< Element type
 struct RandomSparseMetaFunc {
 
@@ -757,10 +757,10 @@ struct RandomSparseMetaFunc {
 
     /// Construction of Gaussian RNG functor.
     Params(
-      uint64_t seed_ = 0, 
-      int MetaSizeInBits_ = 2 
+      uint64_t seed_ = 0,
+      int MetaSizeInBits_ = 2
     ):
-      seed(seed_), 
+      seed(seed_),
       MetaSizeInBits(MetaSizeInBits_) {
       if (MetaSizeInBits_ == 2) {
         range = 6;
@@ -897,10 +897,10 @@ template <
 void TensorFillRandomSparseMeta(
   TensorView<Element, Layout> view,       ///< destination tensor
   uint64_t seed,                          ///< seed for RNG
-  int MetaSizeInBits = 2) {                        ///< If non-negative, specifies number of fractional bits that 
+  int MetaSizeInBits = 2) {                        ///< If non-negative, specifies number of fractional bits that
                                           ///  are not truncated to zero. Permits reducing precision of
-                                          ///  data.                 
-  
+                                          ///  data.
+
   using RandomFunc = detail::RandomSparseMetaFunc<Element>;
   using Func = detail::TensorFillRandomUniformFunc<Element, Layout>;
   using Params = typename Func::Params;
@@ -922,9 +922,9 @@ void BlockFillRandomSparseMeta(
   size_t capacity,
   uint64_t seed,                          ///< seed for RNG
   int MetaSizeInBits = 2) {               ///< meta data size
-  
+
   using RandomFunc = detail::RandomSparseMetaFunc<Element>;
-  
+
   typename RandomFunc::Params params(seed, MetaSizeInBits);
 
   BlockForEach<Element, RandomFunc>(ptr, capacity, params);
@@ -1001,7 +1001,7 @@ struct TensorFillDiagonalFunc {
   void operator()(TensorCoord const &coord) {
 
     bool is_diag = true;
-    
+
     CUTLASS_PRAGMA_UNROLL
     for (int i = 1; i < Layout::kRank; ++i) {
       if (coord[i] != coord[i - 1]) {
@@ -1080,7 +1080,7 @@ struct TensorFillPartialFunc {
   void operator()(TensorCoord const &coord) {
 
     bool predicate = true;
-      
+
     switch (params.fill_mode) {
     case FillMode::kFull:
       predicate = true;
@@ -1117,12 +1117,12 @@ struct TensorFillPartialFunc {
       break;
 
     case FillMode::kNone: // fall-through
-    
+
     default:
       predicate = false;
       break;
     }
-    
+
     if (predicate) {
       params.view.at(coord) = params.element;
     }
@@ -1144,7 +1144,7 @@ struct TensorClearPartialFunc {
   /// Coordinate in tensor's index space
   typedef typename TensorView::TensorCoord TensorCoord;
 
-  /// 
+  ///
   static_assert((Layout::kRank == 2), "TensorClearPartial is only supported for matrices");
 
   /// Parameters structure
@@ -1200,11 +1200,11 @@ struct TensorClearPartialFunc {
   void operator()(TensorCoord const &coord) {
 
     bool predicate = true;
-      
+
     switch (params.fill_mode) {
 
     case FillMode::kLower:
-      if ((coord[0] >= coord[1]) || 
+      if ((coord[0] >= coord[1]) ||
           ((coord[1] - coord[0]) >= params.alignment))  {
           predicate = false;
         break;
@@ -1220,12 +1220,12 @@ struct TensorClearPartialFunc {
       break;
 
     case FillMode::kNone: // fall-through
-    
+
     default:
       predicate = false;
       break;
     }
-    
+
     if (predicate) {
       params.view.at(coord) = params.element;
     }
@@ -1244,7 +1244,7 @@ void TensorFillDiagonal(
   TensorView<Element, Layout> view,       ///< destination tensor
   Element diag = Element(1),              ///< value to write in the diagonal
   Element other = Element(0)) {           ///< value to write off the diagonal
-  
+
   typedef detail::TensorFillDiagonalFunc<Element, Layout> Func;
   typedef typename Func::Params Params;
 
@@ -1263,7 +1263,7 @@ void TensorFillPartial(
   TensorView<Element, Layout> view,       ///< destination tensor
   Element element,
   FillMode fill_mode) {
-  
+
   typedef detail::TensorFillPartialFunc<Element, Layout> Func;
   typedef typename Func::Params Params;
 
@@ -1273,7 +1273,7 @@ void TensorFillPartial(
   );
 }
 
-/// Clears a tensor partially depending on fill mode and alignment. Elements on the wrong-side 
+/// Clears a tensor partially depending on fill mode and alignment. Elements on the wrong-side
 /// of fillmode (upto the alignment) are overwritten with the user supplied element (typically zeros)
 template <
   typename Element,               ///< Element type
@@ -1283,7 +1283,7 @@ void TensorClearPartial(
   Element element,
   FillMode fill_mode,
   int alignment) {
-  
+
   typedef detail::TensorClearPartialFunc<Element, Layout> Func;
   typedef typename Func::Params Params;
 
@@ -1300,7 +1300,7 @@ template <
   typename Element,               ///< Element type
   typename Layout>                ///< Layout function
 void TensorFill(
-  TensorView<Element, Layout> view,         ///< destination tensor 
+  TensorView<Element, Layout> view,         ///< destination tensor
   Element val = Element(0)) {               ///< value to uniformly fill it with
 
   TensorFillDiagonal(view, val, val);
@@ -1388,7 +1388,7 @@ struct TensorUpdateDiagonalFunc {
   void operator()(TensorCoord const &coord) {
 
     bool is_diag = true;
-    
+
     CUTLASS_PRAGMA_UNROLL
     for (int i = 1; i < Layout::kRank; ++i) {
       if (coord[i] != coord[i - 1]) {
@@ -1398,7 +1398,7 @@ struct TensorUpdateDiagonalFunc {
     }
 
     if (is_diag) {
-      params.view.at(coord) = params.diag;  
+      params.view.at(coord) = params.diag;
     }
   }
 };
@@ -1494,7 +1494,7 @@ struct TensorUpdateOffDiagonalFunc {
   void operator()(TensorCoord const &coord) {
 
     bool is_diag = true;
-    
+
     CUTLASS_PRAGMA_UNROLL
     for (int i = 1; i < Layout::kRank; ++i) {
       if (coord[i] != coord[i - 1]) {
@@ -1504,7 +1504,7 @@ struct TensorUpdateOffDiagonalFunc {
     }
 
     if (!is_diag) {
-      params.view.at(coord) = params.other;  
+      params.view.at(coord) = params.other;
     }
   }
 };
@@ -1575,7 +1575,7 @@ struct TensorFillLinearFunc {
       Array<Element, Layout::kRank> const & v_,
       Element s_ = Element(0)
     ):
-      view(view_), v(v_), s(s_) { 
+      view(view_), v(v_), s(s_) {
 
     }
   };
@@ -1601,7 +1601,7 @@ struct TensorFillLinearFunc {
   CUTLASS_DEVICE
   void operator()(TensorCoord const &coord) {
     Element sum = params.s;
-    
+
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < Layout::kRank; ++i) {
       sum += params.v[i] * Element(coord[i]);
@@ -1636,6 +1636,59 @@ void TensorFillLinear(
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+namespace detail {
+
+/// Computes a random Gaussian distribution
+template <typename Element>                ///< Element type
+struct SeqFunc {
+
+  /// Parameters structure
+  struct Params {
+
+    //
+    // Data members
+    //
+
+    Element init;
+    Element step;
+
+    /// Default ctor
+    CUTLASS_HOST_DEVICE
+    Params() {}
+
+    //
+    // Methods
+    //
+
+    /// Construction of Gaussian RNG functor.
+    Params(Element init_, Element step_): init(init_),step(step_) {}
+  };
+
+  //
+  // Data members
+  //
+
+  /// Parameters object
+  Params params;
+
+  //
+  // Methods
+  //
+
+  /// Device-side initialization of RNG
+  CUTLASS_DEVICE
+  SeqFunc(Params const &params): params(params) {}
+
+  /// Compute random value and update RNG state
+  CUTLASS_DEVICE
+  Element operator()() {
+    int gtid = threadIdx.x + blockIdx.x * blockDim.x;
+    Element result = params.init + params.step * Element(gtid);
+    return result;
+  }
+};
+}
+
 /// Fills a block of data with sequential elements
 template <
   typename Element
@@ -1643,9 +1696,11 @@ template <
 void BlockFillSequential(
   Element *ptr,
   int64_t capacity,
-  Element v = Element(1),
-  Element s = Element(0)) {
-
+  Element step = Element(1),
+  Element init = Element(0)) {
+  using Func = detail::SeqFunc<Element>;
+  typename Func::Params params(init, step);
+  BlockForEach<Element, Func>(ptr, capacity, params);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1665,20 +1720,20 @@ void BlockFillRandom(
 
   if (dist.kind == Distribution::Gaussian) {
     BlockFillRandomGaussian<Element>(
-      ptr, 
-      capacity, 
-      seed, 
-      static_cast<Real>(dist.gaussian.mean), 
-      static_cast<Real>(dist.gaussian.stddev), 
+      ptr,
+      capacity,
+      seed,
+      static_cast<Real>(dist.gaussian.mean),
+      static_cast<Real>(dist.gaussian.stddev),
       dist.int_scale);
   }
   else if (dist.kind == Distribution::Uniform) {
     BlockFillRandomUniform<Element>(
-      ptr, 
-      capacity, 
-      seed, 
+      ptr,
+      capacity,
+      seed,
       static_cast<Real>(dist.uniform.max),
-      static_cast<Real>(dist.uniform.min), 
+      static_cast<Real>(dist.uniform.min),
       dist.int_scale);
   }
 }
@@ -1726,7 +1781,7 @@ struct TensorCopyDiagonalInFunc {
       TensorView view_,      ///< destination tensor
       Element const *ptr_
     ):
-      view(view_), ptr(ptr_) { 
+      view(view_), ptr(ptr_) {
 
     }
   };
@@ -1830,7 +1885,7 @@ struct TensorCopyDiagonalOutFunc {
       TensorView view_,      ///< destination tensor
       Element *ptr_
     ):
-      view(view_), ptr(ptr_) { 
+      view(view_), ptr(ptr_) {
 
     }
   };
@@ -1864,7 +1919,7 @@ struct TensorCopyDiagonalOutFunc {
       }
     }
     if (is_diagonal) {
-      params.ptr[coord[0]] = params.view.at(coord);  
+      params.ptr[coord[0]] = params.view.at(coord);
     }
   }
 };

@@ -216,6 +216,7 @@ struct AttentionScalingCoefsUpdaterSm80
             int accum_n = mma_n * InstructionShape::kN * OpDelta::kColumn +
                 col + lane_offset.column();
             int idx = mma_accum_start + row * kElementsPerAccess + col;
+//            printf("blockIdx.x: {%d}, blockIdx.y: {%d}, blockIdx.z: {%d}, threadIdx.x: {%d}, threadIdx.y: {%d}, threadIdx.z: {%d}, idx: {%d}, accum_m: {%d}, accum_n: {%d}, mma_m: {%d}, row: {%d}, mma_n: {%d}, col: {%d}, mma_accum_start: {%d}\n", blockIdx.x, blockIdx.y, blockIdx.z, threadIdx.x, threadIdx.y, threadIdx.z, idx, accum_m, accum_n, mma_m, row, mma_n, col, mma_accum_start);
             op(accum_m, accum_n, idx);
           }
         }

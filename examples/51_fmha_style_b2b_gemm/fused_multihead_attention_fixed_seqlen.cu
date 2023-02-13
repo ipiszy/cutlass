@@ -206,6 +206,10 @@ struct Options {
       help = true;
       return;
     }
+//    cmd.get_cmd_line_argument("batch_size", batch_size, 1);
+//    cmd.get_cmd_line_argument("head_size", head_size, 8);
+//    cmd.get_cmd_line_argument("head_size_v", head_size_v, head_size);
+//    cmd.get_cmd_line_argument("seq_length", seq_length, 8);
 
     cmd.get_cmd_line_argument("alignment", alignment, 1);
     cmd.get_cmd_line_argument("head_number", head_number, 1);
@@ -458,9 +462,9 @@ public:
     cutlass::Distribution::Kind init_Q_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_K_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_Bias_ = cutlass::Distribution::Uniform,
-    cutlass::Distribution::Kind init_P_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_P_ = cutlass::Distribution::AllZeros,
     cutlass::Distribution::Kind init_V_ = cutlass::Distribution::Uniform,
-    cutlass::Distribution::Kind init_O_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_O_ = cutlass::Distribution::AllZeros,
     uint32_t seed_ = 3080
   ):
     options(options_), init_Q(init_Q_), init_K(init_K_), init_P(init_P_), init_V(init_V_), init_Bias(init_Bias_), init_O(init_O_), seed(seed_) { }
@@ -497,11 +501,15 @@ private:
       cutlass::reference::device::BlockFillSequential(
         ptr, capacity, Element(1), Element());
     }
-    else {
-
+    else if (dist_kind == cutlass::Distribution::AllOnes) {
       // Fill with all 1s
       cutlass::reference::device::BlockFillSequential(
         ptr, capacity, Element(), Element(1));
+    }
+    else {
+      // Fill with all 0s
+      cutlass::reference::device::BlockFillSequential(
+        ptr, capacity, Element(), Element(0));
     }
   }
 
@@ -675,6 +683,7 @@ private:
     initialize_tensor_(block_K.get(), total_elements_K, init_K, seed + 2);
     initialize_tensor_(block_V.get(), total_elements_V, init_V, seed + 3);
     initialize_tensor_(block_Bias.get(), total_elements_Bias, init_Bias, seed + 4);
+    std::cout << "blockBias ptr: " << (void*)(block_Bias.get()) << std::endl;
   }
 
   template<typename Element>
@@ -699,6 +708,7 @@ private:
         printf("[%d/%d] diff = %f, rel_diff = %f, {computed=%f, ref=%f}.\n", int(i), int(size), abs_diff, relative_diff, (float)(vector_Input.at(i)), (float)(vector_Input_Ref.at(i)));
         res = false;
       }
+//      printf("[%d/%d] diff = %f, rel_diff = %f, {computed=%f, ref=%f}.\n", int(i), int(size), abs_diff, relative_diff, (float)(vector_Input.at(i)), (float)(vector_Input_Ref.at(i)));
 
     }
 
@@ -767,13 +777,27 @@ private:
           Attention::MM0::Mma::kTransformA,
           view_K,
           Attention::MM0::Mma::kTransformB,
-          ElementAccumulator(options.beta),
+          ElementAccumulator(1),
           (options.has_bias ? view_BiasAccum : view_Ref_P_device),
           view_Ref_P_device,
           ElementAccumulator(0)
         );
 
         std::vector<ElementP> matrix_Ref(layout_P.capacity(extent_P));
+        cutlass::device_memory::copy_to_host(matrix_Ref.data(), block_Ref_P.get(), matrix_Ref.size());
+        cutlass::TensorView<ElementP, LayoutP> view_Ref_host(matrix_Ref.data(), layout_P, extent_P);
+        int n_dim = problem0.n();
+        for (int m = 0; m < problem0.m(); m++) {
+          int n_dim_row = n_dim;
+          if (options.causal) {
+            n_dim_row = std::min(m + 1, n_dim);
+          }
+          // Mask out the rest of the attention matrix
+          for (int n = n_dim_row; n < n_dim; ++n) {
+            view_Ref_host.ref().at({m, n}) = ElementP(0);
+          }
+        }
+        cutlass::device_memory::copy_to_device(block_Ref_P.get(), matrix_Ref.data(), matrix_Ref.size());
 
         // Reference GEMM
         cutlass::reference::device::GemmComplex<
@@ -1117,9 +1141,9 @@ int main(int argc, char const **args) {
 //    static int const kKeysPerBlock = 64;
 //    return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
 //  }
-  run_attention<32, 128, true>(options);
+//  run_attention<32, 128, true>(options);
   run_attention<64, 128, true>(options);
-  run_attention<128, 128, true>(options);
+//  run_attention<128, 128, true>(options);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

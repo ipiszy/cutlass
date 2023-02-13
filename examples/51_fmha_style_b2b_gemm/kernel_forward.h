@@ -419,10 +419,10 @@ struct AttentionKernel {
   struct SharedStorageEpilogueAtEnd : ScalingCoefs {
     struct SharedStorageAfterMM0 {
       // Everything here might be overwritten during MM0
-      union {
+//      union {
         typename MM0::BiasLoader::SmemTile bias;
         typename MM0::AccumulatorSharedStorage si;
-      };
+//      };
       typename MM1::SharedStorageMM1 mm1;
     };
 
@@ -642,6 +642,7 @@ struct AttentionKernel {
             [&](int accum_m) {},
             [&](int accum_m, int accum_n, int idx) {
               if (accum_m < problem_size_0_m && accum_n < problem_size_0_n) {
+//                printf("blockIdx.x: {%d}, blockIdx.y: {%d}, blockIdx.z: {%d}, threadIdx.x: {%d}, threadIdx.y: {%d}, threadIdx.z: {%d}, iter_key_start: {%d}, idx: {%d}, accum_m: {%d}, accum_n: {%d}, base_addr: {%p}, accm: {%f}, bias: {%f}\n", blockIdx.x, blockIdx.y, blockIdx.z, threadIdx.x, threadIdx.y, threadIdx.z, iter_key_start, idx, accum_m, accum_n, (void*)(p.attn_bias_ptr + query_start * p.bias_strideM + iter_key_start), accum[idx], float(bias_tensor_ref.at({accum_m, accum_n})));
                 accum[idx] += bias_tensor_ref.at({accum_m, accum_n});
               }
             },
@@ -661,8 +662,7 @@ struct AttentionKernel {
             },
             [&](int accum_m, int accum_n, int idx) {
               if (accum_n > last_col) {
-                accum[idx] =
-                    -cutlass::platform::numeric_limits<accum_t>::infinity();
+                accum[idx] = 0;
               }
             },
             [&](int accum_m) {});
