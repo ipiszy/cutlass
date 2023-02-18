@@ -215,7 +215,7 @@ struct Options {
     cmd.get_cmd_line_argument("head_number", head_number, 1);
     cmd.get_cmd_line_argument("batch_size", batch_size, 2048);
     cmd.get_cmd_line_argument("head_size", head_size, 128);
-    cmd.get_cmd_line_argument("head_size_v", head_size_v, head_size);
+    cmd.get_cmd_line_argument("head_size_v", head_size_v, 256);
     cmd.get_cmd_line_argument("seq_length", seq_length, 256);
     cmd.get_cmd_line_argument("seq_length_kv", seq_length_kv, seq_length);
     cmd.get_cmd_line_argument("has_bias", has_bias, false);
@@ -459,11 +459,11 @@ public:
 
   TestbedAttention(
     Options &options_,
-    cutlass::Distribution::Kind init_Q_ = cutlass::Distribution::AllOnes,
-    cutlass::Distribution::Kind init_K_ = cutlass::Distribution::AllOnes,
-    cutlass::Distribution::Kind init_Bias_ = cutlass::Distribution::AllOnes,
+    cutlass::Distribution::Kind init_Q_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_K_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_Bias_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_P_ = cutlass::Distribution::AllZeros,
-    cutlass::Distribution::Kind init_V_ = cutlass::Distribution::AllOnes,
+    cutlass::Distribution::Kind init_V_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_O_ = cutlass::Distribution::AllZeros,
     uint32_t seed_ = 3080
   ):
@@ -779,7 +779,7 @@ private:
           Attention::MM0::Mma::kTransformA,
           view_K,
           Attention::MM0::Mma::kTransformB,
-          ElementAccumulator(0),
+          ElementAccumulator(1),
           (options.has_bias ? view_BiasAccum : view_Ref_P_device),
           // view_Ref_P_device,
           view_Ref_P_device,
@@ -1160,7 +1160,7 @@ int main(int argc, char const **args) {
 //    return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
 //  }
 //  run_attention<32, 128, true>(options);
-  run_attention<64, 128, true>(options);
+  run_attention<32, 128, false>(options);
 //  run_attention<128, 128, true>(options);
 }
 

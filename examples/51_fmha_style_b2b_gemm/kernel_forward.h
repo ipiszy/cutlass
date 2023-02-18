@@ -41,6 +41,7 @@
 #include "attention_scaling_coefs_updater.h"
 #include "cutlass/epilogue/thread/activation.h"
 #include "cutlass/epilogue/thread/linear_combination.h"
+#include "cutlass/epilogue/thread/scale_type.h"
 #include "cutlass/epilogue/threadblock/default_epilogue_simt.h"
 #include "cutlass/epilogue/threadblock/default_epilogue_tensor_op.h"
 #include "cutlass/epilogue/threadblock/default_epilogue_volta_tensor_op.h"
@@ -53,6 +54,7 @@
 #include "cutlass/gemm/threadblock/default_mma_core_sm80.h"
 #include "cutlass/gemm/threadblock/threadblock_swizzle.h"
 #include "cutlass/matrix_shape.h"
+#include "cutlass/numeric_conversion.h"
 #include "cutlass/platform/platform.h"
 #include "cutlass/transform/threadblock/predicated_tile_iterator.h"
 #include "debug_utils.h"
@@ -443,10 +445,10 @@ struct AttentionKernel {
   struct SharedStorageEpilogueInLoop : ScalingCoefs {
     struct SharedStorageAfterMM0 {
       // Everything here might be overwritten during MM0
-      union {
+      // union {
         typename MM0::BiasLoader::SmemTile bias;
         typename MM0::AccumulatorSharedStorage si;
-      };
+      // };
       typename MM1::SharedStorageMM1 mm1;
       typename MM1::DefaultEpilogue::SharedStorage epilogue;
     };
@@ -726,38 +728,70 @@ struct AttentionKernel {
           prologueV(blockN + 1);
         }
 
-//        if (!kKeepOutputInRF) {
-//          DISPATCH_BOOL(
-//              iter_key_start == 0, kIsFirst, ([&] {
-//                DISPATCH_BOOL(
-//                    (iter_key_start + kKeysPerBlock) >= p.num_keys,
-//                    kIsLast,
-//                    ([&] {
-//                      using DefaultEpilogue = typename MM1::DefaultEpilogue;
-//                      using DefaultOp =
-//                          typename MM1::DefaultConfig::EpilogueOutputOp;
-//                      using ElementCompute = typename DefaultOp::ElementCompute;
-//
-//                      int col = blockN * MM1::Mma::Shape::kN;
-//                      auto source_iter = createOutputAccumIter(col);
-//                      auto dest_iter = call_conditional<
-//                          kIsLast,
-//                          decltype(createOutputIter),
-//                          decltype(createOutputAccumIter)>::
-//                          apply(createOutputIter, createOutputAccumIter, col);
-//                      DefaultOp epilogue_op({1, 0});
-//                      DefaultEpilogue epilogue(
-//                          shared_storage.epilogue_shared_storage(),
-//                          thread_id(),
-//                          warp_id(),
-//                          lane_id());
-//                      epilogue(epilogue_op, dest_iter, accum_o, source_iter);
-//                    }));
-//              }));
-//          if (!kSingleValueIteration) {
-//            __syncthreads();
-//          }
-//        }
+        if (!kKeepOutputInRF) {
+          DISPATCH_BOOL(
+              iter_key_start == 0, kIsFirst, ([&] {
+                DISPATCH_BOOL(
+                    (iter_key_start + kKeysPerBlock) >= p.num_keys,
+                    kIsLast,
+                    ([&] {
+                      using DefaultEpilogue = typename MM1::DefaultEpilogue;
+                      using DefaultOp =
+                          typename MM1::DefaultConfig::EpilogueOutputOp;
+                      using ElementCompute = typename DefaultOp::ElementCompute;
+                      using EpilogueOutputOp = typename cutlass::epilogue::thread::LinearCombination<
+                              typename cutlass::platform::conditional<
+                                  kIsLast,
+                                  output_t,
+                                  output_accum_t>::type,
+                              DefaultOp::kCount,
+                              typename DefaultOp::ElementAccumulator,
+                              ElementCompute,
+                              (kIsFirst ?
+                                  cutlass::epilogue::thread::ScaleType::Nothing :
+                                  cutlass::epilogue::thread::ScaleType::NoBetaScaling),
+                              cutlass::FloatRoundStyle::round_to_nearest,
+                              output_accum_t>;
+                      using Epilogue = typename cutlass::epilogue::threadblock::
+                          EpiloguePipelined<
+                              typename DefaultEpilogue::Shape,
+                              typename MM1::Mma::Operator,
+                              DefaultEpilogue::kPartitionsK,
+                              typename cutlass::platform::conditional<
+                                  kIsLast,
+                                  typename MM1::OutputTileIterator,
+                                  typename MM1::OutputTileIteratorAccum>::type,
+                              typename DefaultEpilogue::
+                                  AccumulatorFragmentIterator,
+                              typename DefaultEpilogue::WarpTileIterator,
+                              typename DefaultEpilogue::SharedLoadIterator,
+                              EpilogueOutputOp,
+                              typename DefaultEpilogue::Padding,
+                              DefaultEpilogue::kFragmentsPerIteration,
+                              true, // IterationsUnroll
+                              typename MM1::OutputTileIteratorAccum // Read
+                                                                    // iterator
+                              >;
+                      int col = blockN * MM1::Mma::Shape::kN;
+                      auto source_iter = createOutputAccumIter(col);
+                      auto dest_iter = call_conditional<
+                          kIsLast,
+                          decltype(createOutputIter),
+                          decltype(createOutputAccumIter)>::
+                          apply(createOutputIter, createOutputAccumIter, col);
+                      EpilogueOutputOp epilogue_op({1.0, 0.0});
+                      Epilogue epilogue(
+                          shared_storage.epilogue_shared_storage(),
+                          thread_id(),
+                          warp_id(),
+                          lane_id());
+                      epilogue(epilogue_op, dest_iter, accum_o, source_iter);
+                    }));
+              }));
+          if (!kSingleValueIteration) {
+            __syncthreads();
+          }
+        }
       }
       __syncthreads(); // we modify `m_prime` after
     }

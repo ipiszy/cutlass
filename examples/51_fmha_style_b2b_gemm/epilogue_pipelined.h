@@ -80,7 +80,7 @@ struct ApplyEpilogueOp {
       Op const& output_op,
       int row_id,
       typename Op::FragmentAccumulator const& accum,
-      typename Op::FragmentOutput const& source) {
+      typename Op::FragmentSource const& source) {
     return output_op(accum, source);
   }
   static CUTLASS_DEVICE typename Op::FragmentOutput apply(

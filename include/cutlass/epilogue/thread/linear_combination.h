@@ -78,6 +78,7 @@ public:
   static const ScaleType::Kind kScale = Scale;
   using FragmentOutput = Array<ElementOutput, kCount>;
   using FragmentAccumulator = Array<ElementAccumulator, kCount>;
+  using FragmentSource = Array<ElementC, kCount>;
   using ComputeFragment = Array<ElementCompute, kCount>;
 
   using ParamsBase = LinearCombinationParams;
@@ -187,10 +188,10 @@ public:
   CUTLASS_HOST_DEVICE
   FragmentOutput operator()(
     FragmentAccumulator const &accumulator,
-    FragmentOutput const &source) const {
+    FragmentSource const &source) const {
 
     // Convert source to interal compute numeric type
-    NumericArrayConverter<ElementCompute, ElementOutput, kCount, Round> source_converter;
+    NumericArrayConverter<ElementCompute, ElementC, kCount, Round> source_converter;
     NumericArrayConverter<ElementCompute, ElementAccumulator, kCount, Round> accumulator_converter;
 
     // Convert to destination numeric type
