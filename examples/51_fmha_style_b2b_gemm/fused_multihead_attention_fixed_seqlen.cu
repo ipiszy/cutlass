@@ -206,10 +206,10 @@ struct Options {
       help = true;
       return;
     }
-//    cmd.get_cmd_line_argument("batch_size", batch_size, 1);
-//    cmd.get_cmd_line_argument("head_size", head_size, 8);
+//    cmd.get_cmd_line_argument("batch_size", batch_size, 8);
+//    cmd.get_cmd_line_argument("head_size", head_size, 64);
 //    cmd.get_cmd_line_argument("head_size_v", head_size_v, head_size);
-//    cmd.get_cmd_line_argument("seq_length", seq_length, 8);
+//    cmd.get_cmd_line_argument("seq_length", seq_length, 256);
 
     cmd.get_cmd_line_argument("alignment", alignment, 1);
     cmd.get_cmd_line_argument("head_number", head_number, 1);
@@ -459,11 +459,11 @@ public:
 
   TestbedAttention(
     Options &options_,
-    cutlass::Distribution::Kind init_Q_ = cutlass::Distribution::Uniform,
-    cutlass::Distribution::Kind init_K_ = cutlass::Distribution::Uniform,
-    cutlass::Distribution::Kind init_Bias_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_Q_ = cutlass::Distribution::AllOnes,
+    cutlass::Distribution::Kind init_K_ = cutlass::Distribution::AllOnes,
+    cutlass::Distribution::Kind init_Bias_ = cutlass::Distribution::AllOnes,
     cutlass::Distribution::Kind init_P_ = cutlass::Distribution::AllZeros,
-    cutlass::Distribution::Kind init_V_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_V_ = cutlass::Distribution::AllOnes,
     cutlass::Distribution::Kind init_O_ = cutlass::Distribution::AllZeros,
     uint32_t seed_ = 3080
   ):
@@ -520,7 +520,8 @@ private:
     // Set scalors for the mha example
     //
 
-    options.alpha0 = 1.0f / sqrt(float(options.head_size));
+//    options.alpha0 = 1.0f / sqrt(float(options.head_size));
+    options.alpha0 = 1.0f;
     options.alpha1 = 1.0f;
     options.beta = 0;
 
@@ -754,6 +755,7 @@ private:
 
         cutlass::DeviceAllocation<ElementP>    block_Ref_P(layout_P.capacity(extent_P));
         cutlass::TensorView<ElementP, LayoutP> view_Ref_P_device(block_Ref_P.get(), layout_P, extent_P);
+        initialize_tensor_(block_Ref_P.get(), problem0.m() * problem0.n(), cutlass::Distribution::AllZeros, 0);
 
         cutlass::TensorView<ElementBias, LayoutBias> view_Bias(block_Bias.get() + offset_Bias.at(i), layout_Bias, extent_Bias);
         cutlass::DeviceAllocation<ElementP>    block_BiasAccum(layout_Bias.capacity(extent_Bias));
@@ -777,8 +779,9 @@ private:
           Attention::MM0::Mma::kTransformA,
           view_K,
           Attention::MM0::Mma::kTransformB,
-          ElementAccumulator(1),
+          ElementAccumulator(0),
           (options.has_bias ? view_BiasAccum : view_Ref_P_device),
+          // view_Ref_P_device,
           view_Ref_P_device,
           ElementAccumulator(0)
         );
@@ -787,7 +790,15 @@ private:
         cutlass::device_memory::copy_to_host(matrix_Ref.data(), block_Ref_P.get(), matrix_Ref.size());
         cutlass::TensorView<ElementP, LayoutP> view_Ref_host(matrix_Ref.data(), layout_P, extent_P);
         int n_dim = problem0.n();
+//        std::cout << "==== before silu ====" << std::endl;
         for (int m = 0; m < problem0.m(); m++) {
+          for (int n = 0; n < problem0.n(); n++) {
+            float x = view_Ref_host.ref().at({m, n});
+//            std::cout << "(" << std::to_string(m) << ", " << std::to_string(n) << "): " << x << std::endl;
+            x = x * (1 / (1 + exp(-x)));
+            x = x / (float)(options.seq_length);
+            view_Ref_host.ref().at({m, n}) = x;
+          }
           int n_dim_row = n_dim;
           if (options.causal) {
             n_dim_row = std::min(m + 1, n_dim);
@@ -797,6 +808,12 @@ private:
             view_Ref_host.ref().at({m, n}) = ElementP(0);
           }
         }
+//        std::cout << "==== after mask ====" << std::endl;
+//        for (int m = 0; m < problem0.m(); m++) {
+//          for (int n = 0; n < problem0.n(); n++) {
+//            std::cout << "(" << std::to_string(m) << ", " << std::to_string(n) << "): " << view_Ref_host.ref().at({m, n}) << std::endl;
+//          }
+//        }
         cutlass::device_memory::copy_to_device(block_Ref_P.get(), matrix_Ref.data(), matrix_Ref.size());
 
         // Reference GEMM
@@ -887,6 +904,7 @@ public:
       p.num_batches = options.batch_size;
       p.head_dim = options.head_size;
       p.head_dim_value = options.head_size_v;
+      p.seq_length = options.seq_length;
       p.num_queries = options.seq_length;
       p.num_keys = options.seq_length_kv;
       p.causal = options.causal;

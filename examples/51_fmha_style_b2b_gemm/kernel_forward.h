@@ -39,6 +39,7 @@
 #include "cutlass/numeric_types.h"
 
 #include "attention_scaling_coefs_updater.h"
+#include "cutlass/epilogue/thread/activation.h"
 #include "cutlass/epilogue/thread/linear_combination.h"
 #include "cutlass/epilogue/threadblock/default_epilogue_simt.h"
 #include "cutlass/epilogue/threadblock/default_epilogue_tensor_op.h"
@@ -137,6 +138,7 @@ struct AttentionKernel {
     // Dimensions/strides
     int32_t head_dim;
     int32_t head_dim_value;
+    int32_t seq_length;
     int32_t num_queries;
     int32_t num_keys;
 
@@ -419,10 +421,10 @@ struct AttentionKernel {
   struct SharedStorageEpilogueAtEnd : ScalingCoefs {
     struct SharedStorageAfterMM0 {
       // Everything here might be overwritten during MM0
-//      union {
+      // volatile union {
         typename MM0::BiasLoader::SmemTile bias;
         typename MM0::AccumulatorSharedStorage si;
-//      };
+      // };
       typename MM1::SharedStorageMM1 mm1;
     };
 
@@ -618,42 +620,41 @@ struct AttentionKernel {
           cutlass::multiplies<typename MM0::Mma::FragmentC>()(p.scale, accum);
 
       // apply attention bias if applicable
+      // load bias tile Bij into shared memory
+      typename MM0::BiasLoader::GmemTileIterator bias_iter(
+          {cutlass::layout::RowMajor(p.bias_strideM)},
+          // attn_bias_pointer points to matrix of size (n_queries, n_keys)
+          // for the relevant batch_id and head_id
+          p.attn_bias_ptr + query_start * p.bias_strideM + iter_key_start,
+          {problem_size_0_m, problem_size_0_n},
+          thread_id());
+      cutlass::TensorRef<scalar_t, cutlass::layout::RowMajor> bias_tensor_ref(
+          shared_storage.after_mm0.bias.data(),
+          cutlass::layout::RowMajor(MM0::ThreadblockShape::kN));
+      typename MM0::BiasLoader::SmemTileIterator smem_tile_iter(
+          bias_tensor_ref, thread_id());
       if (p.attn_bias_ptr != nullptr) {
-        // load bias tile Bij into shared memory
-        typename MM0::BiasLoader::GmemTileIterator bias_iter(
-            {cutlass::layout::RowMajor(p.bias_strideM)},
-            // attn_bias_pointer points to matrix of size (n_queries, n_keys)
-            // for the relevant batch_id and head_id
-            p.attn_bias_ptr + query_start * p.bias_strideM + iter_key_start,
-            {problem_size_0_m, problem_size_0_n},
-            thread_id());
-        cutlass::TensorRef<scalar_t, cutlass::layout::RowMajor> bias_tensor_ref(
-            shared_storage.after_mm0.bias.data(),
-            cutlass::layout::RowMajor(MM0::ThreadblockShape::kN));
-        typename MM0::BiasLoader::SmemTileIterator smem_tile_iter(
-            bias_tensor_ref, thread_id());
         MM0::BiasLoader::load(bias_iter, smem_tile_iter);
+      }
 
-        // Pij += Bij, Pij is in register fragment and Bij is in shared memory
-        auto lane_offset = MM0::ScalingCoefsUpdater::get_lane_offset(
-            lane_id(), warp_id(), iteratorC_tile_offset);
-        MM0::ScalingCoefsUpdater::iterateRows(
-            lane_offset,
-            [&](int accum_m) {},
-            [&](int accum_m, int accum_n, int idx) {
-              if (accum_m < problem_size_0_m && accum_n < problem_size_0_n) {
-//                printf("blockIdx.x: {%d}, blockIdx.y: {%d}, blockIdx.z: {%d}, threadIdx.x: {%d}, threadIdx.y: {%d}, threadIdx.z: {%d}, iter_key_start: {%d}, idx: {%d}, accum_m: {%d}, accum_n: {%d}, base_addr: {%p}, accm: {%f}, bias: {%f}\n", blockIdx.x, blockIdx.y, blockIdx.z, threadIdx.x, threadIdx.y, threadIdx.z, iter_key_start, idx, accum_m, accum_n, (void*)(p.attn_bias_ptr + query_start * p.bias_strideM + iter_key_start), accum[idx], float(bias_tensor_ref.at({accum_m, accum_n})));
+      // Pij += Bij, Pij is in register fragment and Bij is in shared memory
+      auto lane_offset = MM0::ScalingCoefsUpdater::get_lane_offset(
+          lane_id(), warp_id(), iteratorC_tile_offset);
+      MM0::ScalingCoefsUpdater::iterateRows(
+          lane_offset,
+          [&](int accum_m) {},
+          [&](int accum_m, int accum_n, int idx) {
+            if (accum_m < problem_size_0_m && accum_n < problem_size_0_n) {
+              if (p.attn_bias_ptr != nullptr) {
                 accum[idx] += bias_tensor_ref.at({accum_m, accum_n});
               }
-            },
-            [&](int accum_m) {});
-      }
+              accum[idx] = cutlass::epilogue::thread::SiLu<accum_t>()(accum[idx]) / (accum_t)(p.seq_length);
+            }
+          },
+          [&](int accum_m) {});
 
       // Mask out last if causal
       if (p.causal && p.num_keys - iter_key_start <= kKeysPerBlock) {
-        auto query_start = blockIdx.x * kQueriesPerBlock;
-        auto lane_offset = MM0::ScalingCoefsUpdater::get_lane_offset(
-            lane_id(), warp_id(), iteratorC_tile_offset);
         int32_t last_col;
         MM0::ScalingCoefsUpdater::iterateRows(
             lane_offset,
@@ -668,7 +669,7 @@ struct AttentionKernel {
             [&](int accum_m) {});
       }
 
-      // Output results to shared-memory
+      //Output results to shared-memory
       int warp_idx_mn_0 = my_warp_id %
           (MM0::Mma::Base::WarpCount::kM * MM0::Mma::Base::WarpCount::kN);
       auto output_tile_coords = cutlass::MatrixCoord{
