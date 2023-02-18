@@ -797,8 +797,6 @@ struct AttentionKernel {
     }
 
     if (kKeepOutputInRF) {
-      constexpr bool kIsFirst = true;
-      constexpr bool kIsLast = true;
       using DefaultEpilogue = typename MM1::DefaultEpilogue;
       using DefaultOp = typename MM1::DefaultConfig::EpilogueOutputOp;
       using ElementCompute = typename DefaultOp::ElementCompute;

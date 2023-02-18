@@ -552,7 +552,7 @@ private:
     // M = sequence length
     // H = num_heads
     // K = embedding size per head
-    int64_t batch_offset_Q, batch_offset_K, batch_offset_V, batch_offset_Bias, batch_offset_O;
+    int64_t batch_offset_Q, batch_offset_K, batch_offset_V, batch_offset_O;
 
     for (int32_t b = 0; b < options.batch_size; ++b) {
       batch_offset_Q = total_elements_Q;
