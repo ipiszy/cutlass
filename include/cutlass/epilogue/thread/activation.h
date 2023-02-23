@@ -183,7 +183,7 @@ struct LeakyReLU {
     Params():
       LinearCombinationGenericParams<T>(),
       leaky_alpha(T(1)) {}
- 
+
     CUTLASS_HOST_DEVICE
     Params(
       T alpha,
@@ -309,7 +309,11 @@ template <typename T>
 struct Sigmoid {
   CUTLASS_HOST_DEVICE
   T operator()(T const &scalar) const {
+#if defined(CUTLASS_USE_TANH_FOR_SIGMOID)
+    return (fast_tanh(scalar * T(0.5)) + T(1)) * T(0.5);
+#else
     return T(1) / (T(1) + fast_exp(-scalar));
+#endif
   }
 
   using Params = LinearCombinationGenericParams<T>;

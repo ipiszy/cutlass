@@ -152,6 +152,7 @@ struct Options {
   bool help;
   bool error;
   bool reference_check;
+  bool has_bias;
   bool use_mask;
   bool causal;
 
@@ -170,7 +171,7 @@ struct Options {
   int seq_length_kv;
   int iterations;
 
-  // alpha0, alpha1 and beta are fixed 
+  // alpha0, alpha1 and beta are fixed
   // in this multi-head attention example
   float alpha0;
   float alpha1;
@@ -178,7 +179,7 @@ struct Options {
 
   //
   // Methods
-  // 
+  //
 
   Options():
     help(false),
@@ -191,6 +192,7 @@ struct Options {
     head_size_v(64),
     seq_length(1024),
     seq_length_kv(1024),
+    has_bias(false),
     use_mask(false),
     iterations(20),
     causal(false)
@@ -204,18 +206,23 @@ struct Options {
       help = true;
       return;
     }
+//    cmd.get_cmd_line_argument("batch_size", batch_size, 8);
+//    cmd.get_cmd_line_argument("head_size", head_size, 64);
+//    cmd.get_cmd_line_argument("head_size_v", head_size_v, head_size);
+//    cmd.get_cmd_line_argument("seq_length", seq_length, 256);
 
     cmd.get_cmd_line_argument("alignment", alignment, 1);
-    cmd.get_cmd_line_argument("head_number", head_number, 12);
-    cmd.get_cmd_line_argument("batch_size", batch_size, 16);
-    cmd.get_cmd_line_argument("head_size", head_size, 64);
-    cmd.get_cmd_line_argument("head_size_v", head_size_v, head_size);
-    cmd.get_cmd_line_argument("seq_length", seq_length, 1024);
+    cmd.get_cmd_line_argument("head_number", head_number, 1);
+    cmd.get_cmd_line_argument("batch_size", batch_size, 2048);
+    cmd.get_cmd_line_argument("head_size", head_size, 128);
+    cmd.get_cmd_line_argument("head_size_v", head_size_v, 256);
+    cmd.get_cmd_line_argument("seq_length", seq_length, 256);
     cmd.get_cmd_line_argument("seq_length_kv", seq_length_kv, seq_length);
+    cmd.get_cmd_line_argument("has_bias", has_bias, false);
     cmd.get_cmd_line_argument("use_mask", use_mask, false);
     cmd.get_cmd_line_argument("iterations", iterations, 20);
     cmd.get_cmd_line_argument("reference-check", reference_check, true);
-    cmd.get_cmd_line_argument("causal", causal, true);
+    cmd.get_cmd_line_argument("causal", causal, false);
 
     randomize_problems();
 
@@ -272,6 +279,7 @@ struct Options {
       << "  --head_size_v=<int>         Head size in multi-head attention for V (default: --head_size_v=head_size)\n"
       << "  --seq_length=<int>          Sequence length in multi-head attention for Q (default: --seq_length=1024)\n"
       << "  --seq_length_kv=<int>       Sequence length in multi-head attention for K/V (default: --seq_length_kv=seq_length)\n"
+      << "  --has_bias=<bool>           If true, adds bias after the first Gemm.\n"
       << "  --use_mask=<bool>           If true, performs padding-like masking in softmax.\n"
       << "  --iterations=<int>          Number of profiling iterations to perform.\n"
       << "  --reference-check=<bool>    If true, performs reference check.\n"
@@ -283,7 +291,7 @@ struct Options {
   /// Compute performance in GFLOP/s
   double gflops(double runtime_s) const {
 
-    // Number of real-valued multiply-adds 
+    // Number of real-valued multiply-adds
     int64_t fops = int64_t();
 
     for (int i = 0; i < problem_sizes0.size(); ++i) {
@@ -296,14 +304,11 @@ struct Options {
         }
         // P <- Q . K_t
         fops += 2 * num_cols0 * problem0.k();
-        // P <- exp(P - max(P))
-        fops += 2 * num_cols0;
-        // S <- sum(P)
-        fops += num_cols0 - 1;
+        if (has_bias) {
+          fops += num_cols0;
+        }
         // O <- P . V
         fops += 2 * num_cols0 * problem1.n();
-        // O <- O / S
-        fops += num_cols0 * problem1.n();
       }
     }
 
@@ -311,7 +316,45 @@ struct Options {
   }
 };
 
+template <
+  typename DstElement,
+  typename DstLayout,
+  typename SrcElement,
+  typename SrcLayout>
+struct TensorCopyForEachFunc {
+  /// View type
+  using DstTensorView = cutlass::TensorView<DstElement, DstLayout>;
+  using SrcTensorView = cutlass::TensorView<SrcElement, SrcLayout>;
 
+  /// Coordinate in tensor's index space
+  using TensorCoord = typename SrcTensorView::TensorCoord;
+
+  /// Parameters structure
+  struct Params {
+
+    //
+    // Data members
+    //
+    DstTensorView dst_view;
+    SrcTensorView src_view;
+
+    //
+    // Methods
+    //
+    Params(DstTensorView dst_view_, SrcTensorView src_view_):
+      dst_view(dst_view_), src_view(src_view_) {}
+  };
+
+  Params params;
+
+  CUTLASS_DEVICE
+  TensorCopyForEachFunc(Params const &params): params(params) {}
+
+  CUTLASS_DEVICE
+  void operator()(TensorCoord const &coord) {
+    params.dst_view.at(coord) = DstElement(params.src_view.at(coord));
+  }
+};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -325,6 +368,7 @@ public:
 
   using ElementQ = typename Attention::scalar_t;
   using ElementK = typename Attention::scalar_t;
+  using ElementBias = typename Attention::scalar_t;
   using ElementP = typename Attention::accum_t;
   using ElementAccumulator = typename Attention::accum_t;
   using ElementV = typename Attention::scalar_t;
@@ -338,6 +382,7 @@ public:
 
   using LayoutQ = cutlass::layout::RowMajor;
   using LayoutK = cutlass::layout::ColumnMajor;
+  using LayoutBias = cutlass::layout::RowMajor;
   using LayoutP = cutlass::layout::RowMajor;
   using LayoutV = cutlass::layout::RowMajor;
   using LayoutO = cutlass::layout::RowMajor;
@@ -355,6 +400,7 @@ private:
   /// Initialization
   cutlass::Distribution::Kind init_Q;
   cutlass::Distribution::Kind init_K;
+  cutlass::Distribution::Kind init_Bias;
   cutlass::Distribution::Kind init_P;
   cutlass::Distribution::Kind init_V;
   cutlass::Distribution::Kind init_O;
@@ -368,10 +414,12 @@ private:
   std::vector<int64_t> offset_K;
   std::vector<int64_t> offset_P;
   std::vector<int64_t> offset_V;
+  std::vector<int64_t> offset_Bias;
   std::vector<int64_t> offset_O;
 
   std::vector<int64_t> ldq_host;
   std::vector<int64_t> ldk_host;
+  std::vector<int64_t> ldbias_host;
   std::vector<int64_t> ldp_host;
   std::vector<int64_t> ldv_host;
   std::vector<int64_t> ldo_host;
@@ -379,6 +427,7 @@ private:
 
   cutlass::DeviceAllocation<int64_t> ldq;
   cutlass::DeviceAllocation<int64_t> ldk;
+  cutlass::DeviceAllocation<int64_t> ldbias;
   cutlass::DeviceAllocation<int64_t> ldp;
   cutlass::DeviceAllocation<int64_t> ldv;
   cutlass::DeviceAllocation<int64_t> ldo;
@@ -386,19 +435,21 @@ private:
 
   cutlass::DeviceAllocation<ElementQ> block_Q;
   cutlass::DeviceAllocation<ElementK> block_K;
+  cutlass::DeviceAllocation<ElementBias> block_Bias;
   cutlass::DeviceAllocation<ElementP> block_P;
   cutlass::DeviceAllocation<ElementV> block_V;
   cutlass::DeviceAllocation<ElementO> block_O;
   cutlass::DeviceAllocation<ElementNorm> block_Norm;
   cutlass::DeviceAllocation<ElementSum> block_Sum;
 
-  cutlass::DeviceAllocation<int64_t> offset_P_Device;
+//  cutlass::DeviceAllocation<int64_t> offset_P_Device;
 
-  cutlass::DeviceAllocation<ElementQ *> ptr_Q;
-  cutlass::DeviceAllocation<ElementK *> ptr_K;
-  cutlass::DeviceAllocation<ElementP *> ptr_P;
-  cutlass::DeviceAllocation<ElementV *> ptr_V;
-  cutlass::DeviceAllocation<ElementO *> ptr_O;
+//  cutlass::DeviceAllocation<ElementQ *> ptr_Q;
+//  cutlass::DeviceAllocation<ElementK *> ptr_K;
+//  cutlass::DeviceAllocation<ElementO *> ptr_Bias;
+//  cutlass::DeviceAllocation<ElementP *> ptr_P;
+//  cutlass::DeviceAllocation<ElementV *> ptr_V;
+//  cutlass::DeviceAllocation<ElementO *> ptr_O;
 
 public:
 
@@ -410,12 +461,13 @@ public:
     Options &options_,
     cutlass::Distribution::Kind init_Q_ = cutlass::Distribution::Uniform,
     cutlass::Distribution::Kind init_K_ = cutlass::Distribution::Uniform,
-    cutlass::Distribution::Kind init_P_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_Bias_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_P_ = cutlass::Distribution::AllZeros,
     cutlass::Distribution::Kind init_V_ = cutlass::Distribution::Uniform,
-    cutlass::Distribution::Kind init_O_ = cutlass::Distribution::Uniform,
+    cutlass::Distribution::Kind init_O_ = cutlass::Distribution::AllZeros,
     uint32_t seed_ = 3080
   ):
-    options(options_), init_Q(init_Q_), init_K(init_K_), init_P(init_P_), init_V(init_V_), init_O(init_O_), seed(seed_) { }
+    options(options_), init_Q(init_Q_), init_K(init_K_), init_P(init_P_), init_V(init_V_), init_Bias(init_Bias_), init_O(init_O_), seed(seed_) { }
 
   int problem_count() const {
     return (options.head_number * options.batch_size);
@@ -427,33 +479,17 @@ private:
   template <typename Element>
   void initialize_tensor_(
     Element *ptr,
-    size_t capacity, 
+    size_t capacity,
     cutlass::Distribution::Kind dist_kind,
     uint32_t seed) {
 
     if (dist_kind == cutlass::Distribution::Uniform) {
 
-      Element scope_max, scope_min;
-      int bits_input = cutlass::sizeof_bits<Element>::value;
-      int bits_output = cutlass::sizeof_bits<ElementP>::value;
-
-      if (bits_input == 1) {
-        scope_max = 2;
-        scope_min = 0;
-      } else if (bits_input <= 8) {
-        scope_max = 2;
-        scope_min = -2;
-      } else if (bits_output == 16) {
-        scope_max = 8;
-        scope_min = -8;
-      } else {
-        scope_max = 8;
-        scope_min = -8;
-      }
-
+      Element scope_max(1);
+      Element scope_min(-1);
       cutlass::reference::device::BlockFillRandomUniform(
         ptr, capacity, seed, scope_max, scope_min, 0);
-    } 
+    }
     else if (dist_kind == cutlass::Distribution::Gaussian) {
 
       cutlass::reference::device::BlockFillRandomGaussian(
@@ -464,12 +500,16 @@ private:
       // Fill with increasing elements
       cutlass::reference::device::BlockFillSequential(
         ptr, capacity, Element(1), Element());
-    } 
-    else {
-
+    }
+    else if (dist_kind == cutlass::Distribution::AllOnes) {
       // Fill with all 1s
       cutlass::reference::device::BlockFillSequential(
         ptr, capacity, Element(), Element(1));
+    }
+    else {
+      // Fill with all 0s
+      cutlass::reference::device::BlockFillSequential(
+        ptr, capacity, Element(), Element(0));
     }
   }
 
@@ -480,7 +520,8 @@ private:
     // Set scalors for the mha example
     //
 
-    options.alpha0 = 1.0f / sqrt(float(options.head_size));
+//    options.alpha0 = 1.0f / sqrt(float(options.head_size));
+    options.alpha0 = 1.0f;
     options.alpha1 = 1.0f;
     options.beta = 0;
 
@@ -493,48 +534,68 @@ private:
 
     int64_t total_elements_Q = 0;
     int64_t total_elements_K = 0;
+    int64_t total_elements_Bias = 0;
     int64_t total_elements_P = 0;
     int64_t total_elements_V = 0;
     int64_t total_elements_O = 0;
 
     ldq_host.resize(problem_count());
     ldk_host.resize(problem_count());
+    ldbias_host.resize(problem_count());
     ldp_host.resize(problem_count());
     ldv_host.resize(problem_count());
     ldo_host.resize(problem_count());
     seqlen_host.resize(problem_count());
 
-    for (int32_t i = 0; i < problem_count(); ++i) {
+    // Create tensors in BMHK format, where
+    // B = batch_size
+    // M = sequence length
+    // H = num_heads
+    // K = embedding size per head
+    int64_t batch_offset_Q, batch_offset_K, batch_offset_V, batch_offset_O;
 
-      auto problem0 = options.problem_sizes0.at(i);
-      auto problem1 = options.problem_sizes1.at(i);
+    for (int32_t b = 0; b < options.batch_size; ++b) {
+      batch_offset_Q = total_elements_Q;
+      batch_offset_K = total_elements_K;
+      batch_offset_V = total_elements_V;
+      batch_offset_O = total_elements_O;
+      for (int32_t h = 0; h < options.head_number; ++h) {
+        int32_t i = h + b * options.head_number;
 
-      ldq_host.at(i) = LayoutQ::packed({problem0.m(), problem0.k()}).stride(0);
-      ldk_host.at(i) = LayoutK::packed({problem0.k(), problem0.n()}).stride(0);
-      ldp_host.at(i) = LayoutP::packed({problem0.m(), problem0.n()}).stride(0);
-      ldv_host.at(i) = LayoutV::packed({problem1.k(), problem1.n()}).stride(0);
-      ldo_host.at(i) = LayoutO::packed({problem1.m(), problem1.n()}).stride(0);
+        auto problem0 = options.problem_sizes0.at(i);
+        auto problem1 = options.problem_sizes1.at(i);
 
-      // m = n for attention problems.
-      seqlen_host.at(i) = problem0.m();
+        ldq_host.at(i) = LayoutQ::packed({problem0.m(), options.head_number * problem0.k()}).stride(0);
+        ldk_host.at(i) = LayoutK::packed({options.head_number * problem0.k(), problem0.n()}).stride(0);
+        ldbias_host.at(i) = LayoutO::packed({problem0.m(), problem0.n()}).stride(0);
+        ldp_host.at(i) = LayoutP::packed({problem0.m(), problem0.n()}).stride(0);
+        ldv_host.at(i) = LayoutV::packed({problem1.k(), options.head_number * problem1.n()}).stride(0);
+        ldo_host.at(i) = LayoutO::packed({problem1.m(), options.head_number * problem1.n()}).stride(0);
 
-      offset_Q.push_back(total_elements_Q);
-      offset_K.push_back(total_elements_K);
-      offset_P.push_back(total_elements_P);
-      offset_V.push_back(total_elements_V);
-      offset_O.push_back(total_elements_O);
+        // m = n for attention problems.
+        seqlen_host.at(i) = problem0.m();
 
-      int64_t elements_Q = problem0.m() * problem0.k();
-      int64_t elements_K = problem0.k() * problem0.n();
-      int64_t elements_P = problem0.m() * problem0.n();
-      int64_t elements_V = problem1.k() * problem1.n();
-      int64_t elements_O = problem1.m() * problem1.n();
+        offset_Q.push_back(batch_offset_Q + h * problem0.k());
+        offset_K.push_back(batch_offset_K + h * problem0.k());
+        offset_Bias.push_back(total_elements_Bias);
+        offset_P.push_back(total_elements_P);
+        offset_V.push_back(batch_offset_V + h * problem0.k());
+        offset_O.push_back(batch_offset_O + h * problem1.n());
 
-      total_elements_Q += elements_Q;
-      total_elements_K += elements_K;
-      total_elements_P += elements_P;
-      total_elements_V += elements_V;
-      total_elements_O += elements_O;
+        int64_t elements_Q = problem0.m() * problem0.k();
+        int64_t elements_K = problem0.k() * problem0.n();
+        int64_t elements_Bias = problem0.m() * problem0.n();
+        int64_t elements_P = problem0.m() * problem0.n();
+        int64_t elements_V = problem1.k() * problem1.n();
+        int64_t elements_O = problem1.m() * problem1.n();
+
+        total_elements_Q += elements_Q;
+        total_elements_K += elements_K;
+        total_elements_Bias += elements_Bias;
+        total_elements_P += elements_P;
+        total_elements_V += elements_V;
+        total_elements_O += elements_O;
+      }
     }
 
     problem_sizes_device0.reset(problem_count());
@@ -549,6 +610,7 @@ private:
 
     ldq.reset(problem_count());
     ldk.reset(problem_count());
+    ldbias.reset(problem_count());
     ldp.reset(problem_count());
     ldv.reset(problem_count());
     ldo.reset(problem_count());
@@ -558,6 +620,7 @@ private:
     ldk.copy_from_host(ldk_host.data());
     ldp.copy_from_host(ldp_host.data());
     ldv.copy_from_host(ldv_host.data());
+    ldbias.copy_from_host(ldbias_host.data());
     ldo.copy_from_host(ldo_host.data());
     seqlen.copy_from_host(seqlen_host.data());
 
@@ -567,45 +630,51 @@ private:
 
     block_Q.reset(total_elements_Q);
     block_K.reset(total_elements_K);
+    block_Bias.reset(total_elements_Bias);
     block_P.reset(total_elements_P);
     block_V.reset(total_elements_V);
     block_O.reset(total_elements_O);
 
-    offset_P_Device.reset(problem_count());
+//    offset_P_Device.reset(problem_count());
 
-    // sync offset with device
-    cutlass::device_memory::copy_to_device(offset_P_Device.get(), offset_P.data(), offset_P.size());
+//    // sync offset with device
+//    cutlass::device_memory::copy_to_device(offset_P_Device.get(), offset_P.data(), offset_P.size());
 
-    std::vector<ElementQ *> ptr_Q_host(problem_count());
-    std::vector<ElementK *> ptr_K_host(problem_count());
-    std::vector<ElementP *> ptr_P_host(problem_count());
-    std::vector<ElementV *> ptr_V_host(problem_count());
-    std::vector<ElementO *> ptr_O_host(problem_count());
-    std::vector<ElementNorm *> ptr_norm_host(problem_count());
-    std::vector<ElementSum *> ptr_sum_host(problem_count());
+//    std::vector<ElementQ *> ptr_Q_host(problem_count());
+//    std::vector<ElementK *> ptr_K_host(problem_count());
+//    std::vector<ElementO *> ptr_Bias_host(problem_count());
+//    std::vector<ElementP *> ptr_P_host(problem_count());
+//    std::vector<ElementV *> ptr_V_host(problem_count());
+//    std::vector<ElementO *> ptr_O_host(problem_count());
+//    std::vector<ElementNorm *> ptr_norm_host(problem_count());
+//    std::vector<ElementSum *> ptr_sum_host(problem_count());
+//
+//    for (int32_t i = 0; i < problem_count(); ++i) {
+//      ptr_Q_host.at(i) = block_Q.get() + offset_Q.at(i);
+//      ptr_K_host.at(i) = block_K.get() + offset_K.at(i);
+//      ptr_Bias_host.at(i) = block_Bias.get() + offset_Bias.at(i);
+//      ptr_P_host.at(i) = block_P.get() + offset_P.at(i);
+//      ptr_V_host.at(i) = block_V.get() + offset_V.at(i);
+//      ptr_O_host.at(i) = block_O.get() + offset_O.at(i);
+//    }
 
-    for (int32_t i = 0; i < problem_count(); ++i) {
-      ptr_Q_host.at(i) = block_Q.get() + offset_Q.at(i);
-      ptr_K_host.at(i) = block_K.get() + offset_K.at(i);
-      ptr_P_host.at(i) = block_P.get() + offset_P.at(i);
-      ptr_V_host.at(i) = block_V.get() + offset_V.at(i);
-      ptr_O_host.at(i) = block_O.get() + offset_O.at(i);
-    }
-
-    ptr_Q.reset(problem_count());
-    ptr_Q.copy_from_host(ptr_Q_host.data());
-    
-    ptr_K.reset(problem_count());
-    ptr_K.copy_from_host(ptr_K_host.data());
-    
-    ptr_P.reset(problem_count());
-    ptr_P.copy_from_host(ptr_P_host.data());
-
-    ptr_V.reset(problem_count());
-    ptr_V.copy_from_host(ptr_V_host.data());
-
-    ptr_O.reset(problem_count());
-    ptr_O.copy_from_host(ptr_O_host.data());
+//    ptr_Q.reset(problem_count());
+//    ptr_Q.copy_from_host(ptr_Q_host.data());
+//
+//    ptr_K.reset(problem_count());
+//    ptr_K.copy_from_host(ptr_K_host.data());
+//
+//    ptr_Bias.reset(problem_count());
+//    ptr_Bias.copy_from_host(ptr_Bias_host.data());
+//
+//    ptr_P.reset(problem_count());
+//    ptr_P.copy_from_host(ptr_P_host.data());
+//
+//    ptr_V.reset(problem_count());
+//    ptr_V.copy_from_host(ptr_V_host.data());
+//
+//    ptr_O.reset(problem_count());
+//    ptr_O.copy_from_host(ptr_O_host.data());
 
     //
     // Initialize the problems of the workspace
@@ -614,7 +683,8 @@ private:
     initialize_tensor_(block_Q.get(), total_elements_Q, init_Q, seed + 1);
     initialize_tensor_(block_K.get(), total_elements_K, init_K, seed + 2);
     initialize_tensor_(block_V.get(), total_elements_V, init_V, seed + 3);
-
+    initialize_tensor_(block_Bias.get(), total_elements_Bias, init_Bias, seed + 4);
+    std::cout << "blockBias ptr: " << (void*)(block_Bias.get()) << std::endl;
   }
 
   template<typename Element>
@@ -629,6 +699,7 @@ private:
     float abs_tol = 5e-2f;
     // 10% for relative error
     float rel_tol = 1e-1f;
+    bool res = true;
     for (int64_t i = 0; i < size; ++i) {
       float diff = (float)(vector_Input.at(i) - vector_Input_Ref.at(i));
       float abs_diff = fabs(diff);
@@ -636,12 +707,13 @@ private:
       float relative_diff = abs_diff / abs_ref;
       if ( (isnan(vector_Input_Ref.at(i)) || isnan(abs_diff) || isinf(abs_diff)) ||  (abs_diff > abs_tol && relative_diff > rel_tol)) {
         printf("[%d/%d] diff = %f, rel_diff = %f, {computed=%f, ref=%f}.\n", int(i), int(size), abs_diff, relative_diff, (float)(vector_Input.at(i)), (float)(vector_Input_Ref.at(i)));
-        return false;
+        res = false;
       }
+//      printf("[%d/%d] diff = %f, rel_diff = %f, {computed=%f, ref=%f}.\n", int(i), int(size), abs_diff, relative_diff, (float)(vector_Input.at(i)), (float)(vector_Input_Ref.at(i)));
 
     }
 
-    return true;
+    return res;
   }
 
   /// Verifies the result is a GEMM
@@ -649,136 +721,128 @@ private:
 
     bool passed = true;
 
-    for (int32_t i = 0; i < problem_count(); ++i) {
-      cutlass::gemm::GemmCoord problem0 = options.problem_sizes0.at(i);
-      cutlass::gemm::GemmCoord problem1 = options.problem_sizes1.at(i);
-
-      LayoutQ layout_Q(ldq_host.at(i));
-      LayoutK layout_K(ldk_host.at(i));
-      LayoutP layout_P(ldp_host.at(i));
-      LayoutV layout_V(ldv_host.at(i));
-      LayoutO layout_O(ldo_host.at(i));
+    for (int32_t b = 0; b < options.batch_size; ++b) {
+      int32_t i = b * options.head_number;
+      // Problem size is the same for all heads
+      cutlass::gemm::GemmCoord problem0 = options.problem_sizes0.at(b * options.head_number);
+      cutlass::gemm::GemmCoord problem1 = options.problem_sizes1.at(b * options.head_number);
 
       MatrixCoord extent_Q{problem0.m(), problem0.k()};
       MatrixCoord extent_K{problem0.k(), problem0.n()};
       MatrixCoord extent_P{problem0.m(), problem0.n()};
+      MatrixCoord extent_Bias{problem0.m(), problem0.n()};
       MatrixCoord extent_V{problem1.k(), problem1.n()};
       MatrixCoord extent_O{problem1.m(), problem1.n()};
 
-      cutlass::TensorView<ElementQ, LayoutQ> view_Q(block_Q.get() + offset_Q.at(i), layout_Q, extent_Q);
-      cutlass::TensorView<ElementK, LayoutK> view_K(block_K.get() + offset_K.at(i), layout_K, extent_K);
-      cutlass::TensorView<ElementP, LayoutP> view_P(block_P.get() + offset_P.at(i), layout_P, extent_P);
-      cutlass::TensorView<ElementV, LayoutV> view_V(block_V.get() + offset_V.at(i), layout_V, extent_V);
-
-      cutlass::DeviceAllocation<ElementP>    block_Ref(layout_P.capacity(extent_P));
-      cutlass::TensorView<ElementP, LayoutP> view_Ref_device(block_Ref.get(), layout_P, extent_P);
-
+      LayoutO layout_O(ldo_host.at(i));
+      std::vector<ElementO> matrix_O(layout_O.capacity(extent_O));
+      cutlass::device_memory::copy_to_host(matrix_O.data(),   block_O.get() + offset_O.at(i), matrix_O.size());
       cutlass::DeviceAllocation<ElementO>    block_Ref_O(layout_O.capacity(extent_O));
-      cutlass::TensorView<ElementO, LayoutO> view_Ref_O_device(block_Ref_O.get(), layout_O, extent_O);
 
-      // Reference GEMM
-      cutlass::reference::device::GemmComplex<
-          ElementQ, LayoutQ,
-          ElementK, LayoutK,
-          ElementP, LayoutP, 
-          ElementCompute, ElementAccumulator
-      >(
-        problem0,
-        ElementAccumulator(options.alpha0), 
-        view_Q,
-        Attention::MM0::Mma::kTransformA,
-        view_K,
-        Attention::MM0::Mma::kTransformB,
-        ElementAccumulator(options.beta), 
-        view_P, 
-        view_Ref_device, 
-        ElementAccumulator(0)
-      );
+      for (int32_t h = 0; h < options.head_number; ++h) {
+        i = h + b * options.head_number;
 
-      // Compute softmax for P. We need to explicitly compute softmax
-      // over P because softmax is fused to the second GEMM in the
-      // profiled implementation.
-      std::vector<ElementP> matrix_Ref(layout_P.capacity(extent_P));
-      cutlass::device_memory::copy_to_host(matrix_Ref.data(), block_Ref.get(), matrix_Ref.size());
-      cutlass::TensorView<ElementP, LayoutP> view_Ref_host(matrix_Ref.data(), layout_P, extent_P);
-      std::vector<ElementNorm> vector_Norm_Ref(problem0.m());
-      std::vector<ElementSum> vector_Sum_Ref(problem0.m());
+        LayoutQ layout_Q(ldq_host.at(i));
+        LayoutK layout_K(ldk_host.at(i));
+        LayoutP layout_P(ldp_host.at(i));
+        LayoutV layout_V(ldv_host.at(i));
+        LayoutBias layout_Bias(ldbias_host.at(i));
 
-      int n_dim = options.use_mask ? options.problem_sizes0_real.at(i).n() : problem0.n();
+        cutlass::TensorView<ElementQ, LayoutQ> view_Q(block_Q.get() + offset_Q.at(i), layout_Q, extent_Q);
+        cutlass::TensorView<ElementK, LayoutK> view_K(block_K.get() + offset_K.at(i), layout_K, extent_K);
+        cutlass::TensorView<ElementV, LayoutV> view_V(block_V.get() + offset_V.at(i), layout_V, extent_V);
+        cutlass::TensorView<ElementO, LayoutO> view_Ref_O_device(block_Ref_O.get() + offset_O.at(i) - offset_O.at(b * options.head_number), layout_O, extent_O);
 
-      // Compute softmax for referece matrix
-      for (int m = 0; m < problem0.m(); m++) {
-        int n_dim_row = n_dim;
-        if (options.causal) {
-          n_dim_row = std::min(m + 1, n_dim);
-        }
-        ElementSoftmaxCompute max = ElementSoftmaxCompute(view_Ref_host.ref().at({m, 0}));
-        for (int n = 1; n < n_dim_row; n++) {
-           max = std::max(max, ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})));
-        }
+        cutlass::DeviceAllocation<ElementP>    block_Ref_P(layout_P.capacity(extent_P));
+        cutlass::TensorView<ElementP, LayoutP> view_Ref_P_device(block_Ref_P.get(), layout_P, extent_P);
+        initialize_tensor_(block_Ref_P.get(), problem0.m() * problem0.n(), cutlass::Distribution::AllZeros, 0);
 
-        vector_Norm_Ref.at(m) = ElementNorm(max);
+        cutlass::TensorView<ElementBias, LayoutBias> view_Bias(block_Bias.get() + offset_Bias.at(i), layout_Bias, extent_Bias);
+        cutlass::DeviceAllocation<ElementP>    block_BiasAccum(layout_Bias.capacity(extent_Bias));
+        cutlass::TensorView<ElementP, LayoutBias> view_BiasAccum(block_BiasAccum.get(), layout_Bias, extent_Bias);
+        using TensorCopyFunc = TensorCopyForEachFunc<ElementP, LayoutBias, ElementBias, LayoutBias>;
+        using TensorCopyParams = typename TensorCopyFunc::Params;
+        cutlass::reference::device::TensorForEach<TensorCopyFunc, 2 /* rank */, TensorCopyParams>(
+          extent_Bias, TensorCopyParams(view_BiasAccum, view_Bias)
+        );
 
-        ElementSoftmaxCompute sum = ElementSoftmaxCompute();
-        for (int n = 0; n < n_dim_row; n++) {
-          sum += std::exp( ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})) - max );
-        }
-        ElementSoftmaxCompute inv_sum = ElementSoftmaxCompute(1.0f / sum);
+        // Reference GEMM
+        cutlass::reference::device::GemmComplex<
+            ElementQ, LayoutQ,
+            ElementK, LayoutK,
+            ElementP, LayoutP,
+            ElementCompute, ElementAccumulator
+        >(
+          problem0,
+          ElementAccumulator(options.alpha0),
+          view_Q,
+          Attention::MM0::Mma::kTransformA,
+          view_K,
+          Attention::MM0::Mma::kTransformB,
+          ElementAccumulator(1),
+          (options.has_bias ? view_BiasAccum : view_Ref_P_device),
+          // view_Ref_P_device,
+          view_Ref_P_device,
+          ElementAccumulator(0)
+        );
 
-        vector_Sum_Ref.at(m) = ElementSum(inv_sum);
-
-        for (int n = 0; n < n_dim_row; n++) {
-          view_Ref_host.ref().at({m, n}) = ElementP(
-            std::exp( ElementSoftmaxCompute(view_Ref_host.ref().at({m, n})) - max ) * inv_sum
-          );
-        }
-        // Mask out the rest of the attention matrix
-        for (int n = n_dim_row; n < n_dim; ++n) {
-          view_Ref_host.ref().at({m, n}) = ElementP(0);
-        }
-      }
-
-      // when not using mask, problem_real and problem share the same sizes
-      if (options.use_mask) {
+        std::vector<ElementP> matrix_Ref(layout_P.capacity(extent_P));
+        cutlass::device_memory::copy_to_host(matrix_Ref.data(), block_Ref_P.get(), matrix_Ref.size());
+        cutlass::TensorView<ElementP, LayoutP> view_Ref_host(matrix_Ref.data(), layout_P, extent_P);
+        int n_dim = problem0.n();
+//        std::cout << "==== before silu ====" << std::endl;
         for (int m = 0; m < problem0.m(); m++) {
-          for (int n = n_dim; n < problem0.n(); n++) {
+          for (int n = 0; n < problem0.n(); n++) {
+            float x = view_Ref_host.ref().at({m, n});
+//            std::cout << "(" << std::to_string(m) << ", " << std::to_string(n) << "): " << x << std::endl;
+            x = x * (1 / (1 + exp(-x)));
+            x = x / (float)(options.seq_length);
+            view_Ref_host.ref().at({m, n}) = x;
+          }
+          int n_dim_row = n_dim;
+          if (options.causal) {
+            n_dim_row = std::min(m + 1, n_dim);
+          }
+          // Mask out the rest of the attention matrix
+          for (int n = n_dim_row; n < n_dim; ++n) {
             view_Ref_host.ref().at({m, n}) = ElementP(0);
           }
         }
+//        std::cout << "==== after mask ====" << std::endl;
+//        for (int m = 0; m < problem0.m(); m++) {
+//          for (int n = 0; n < problem0.n(); n++) {
+//            std::cout << "(" << std::to_string(m) << ", " << std::to_string(n) << "): " << view_Ref_host.ref().at({m, n}) << std::endl;
+//          }
+//        }
+        cutlass::device_memory::copy_to_device(block_Ref_P.get(), matrix_Ref.data(), matrix_Ref.size());
+
+        // Reference GEMM
+        cutlass::reference::device::GemmComplex<
+            ElementP, LayoutP,
+            ElementV, LayoutV,
+            ElementO, LayoutO,
+            ElementCompute, ElementAccumulator
+        >(
+          problem1,
+          ElementAccumulator(options.alpha1),
+          view_Ref_P_device,
+          Attention::MM0::Mma::kTransformA,
+          view_V,
+          Attention::MM0::Mma::kTransformB,
+          ElementAccumulator(options.beta),
+          view_Ref_O_device,
+          view_Ref_O_device,
+          ElementAccumulator(0)
+        );
       }
 
-      cutlass::device_memory::copy_to_device(block_P.get() + offset_P.at(i), matrix_Ref.data(), matrix_Ref.size());
-
-      // Reference GEMM
-      cutlass::reference::device::GemmComplex<
-          ElementP, LayoutP,
-          ElementV, LayoutV,
-          ElementO, LayoutO, 
-          ElementCompute, ElementAccumulator
-      >(
-        problem1,
-        ElementAccumulator(options.alpha1), 
-        view_P,
-        Attention::MM0::Mma::kTransformA,
-        view_V,
-        Attention::MM0::Mma::kTransformB,
-        ElementAccumulator(options.beta), 
-        view_Ref_O_device, 
-        view_Ref_O_device, 
-        ElementAccumulator(0)
-      );
-
       // Copy to host memory
-      cutlass::TensorView<ElementP, LayoutP> view_Ref(matrix_Ref.data(), layout_P, extent_P);
-
-      std::vector<ElementO> matrix_O(layout_O.capacity(extent_O));
-      cutlass::device_memory::copy_to_host(matrix_O.data(),   block_O.get() + offset_O.at(i), matrix_O.size());
       std::vector<ElementO> matrix_Ref_O(layout_O.capacity(extent_O));
       cutlass::device_memory::copy_to_host(matrix_Ref_O.data(), block_Ref_O.get(), matrix_Ref_O.size());
 
       // printf("Pb %d: \n    Q=(offset=%d, ldq=%d)\n    K=(offset=%d, ldk=%d)\n    O=(offset=%d, ldo=%d)\n",
       //   int(i), int(offset_Q[i]), int(ldq_host[i]), int(offset_K[i]), int(ldk_host[i]), int(offset_O[i]), int(ldo_host[i]));
-  
+
       bool verified_O = false;
 
       if (!verified_O) {
@@ -788,7 +852,7 @@ private:
       passed = passed && verified_O;
 
       if (!passed) {
-        std::cerr << "\n***\nError - problem " << i << " failed the QA check\n***\n" << std::endl;
+        std::cerr << "\n***\nError - problem " << i << " (batch " << b << ") failed the QA check\n***\n" << std::endl;
 
         if (!verified_O) {
           std::cout << "Final matrix output is incorrect" << std::endl;
@@ -818,6 +882,9 @@ public:
       p.query_ptr = block_Q.get();
       p.key_ptr = block_K.get();
       p.value_ptr = block_V.get();
+      if (options.has_bias) {
+        p.attn_bias_ptr = block_Bias.get();
+      }
       p.logsumexp_ptr = nullptr; // Only needed for bw
       p.output_accum_ptr = nullptr;
       if (Attention::kNeedsOutputAccumulatorBuffer) {
@@ -831,26 +898,32 @@ public:
       //   p.cu_seqlens_k_ptr = (int32_t*)cu_seqlens_k->data_ptr();
       // }
 
+      p.scale = options.alpha0;
+
       p.num_heads = options.head_number;
       p.num_batches = options.batch_size;
       p.head_dim = options.head_size;
       p.head_dim_value = options.head_size_v;
+      p.seq_length = options.seq_length;
       p.num_queries = options.seq_length;
       p.num_keys = options.seq_length_kv;
       p.causal = options.causal;
 
-      // TODO: This might overflow for big tensors
+      // All tensors are in BMHK shapes
+      p.q_strideH = options.head_size;
+      p.k_strideH = options.head_size;
+      p.v_strideH = options.head_size_v;
+      p.bias_strideH = int32_t(options.problem_sizes0.at(0).m()) * int32_t(options.problem_sizes0.at(0).n());
+
       p.q_strideM = int32_t(ldq_host[0]);
       p.k_strideM = int32_t(ldk_host[0]);
       p.v_strideM = int32_t(ldv_host[0]);
-      p.q_strideH = p.q_strideM * options.seq_length;
-      p.k_strideH = p.k_strideM * options.seq_length_kv;
-      p.v_strideH = p.v_strideM * options.seq_length_kv;
-      p.o_strideH = options.head_size_v * options.seq_length;
-      p.q_strideB = p.q_strideH * options.head_number;
-      p.k_strideB = p.k_strideH * options.head_number;
-      p.v_strideB = p.v_strideH * options.head_number;
-      p.o_strideB = options.head_size_v * options.seq_length * options.head_number;
+      p.bias_strideM = int32_t(options.problem_sizes0.at(0).n());
+
+      p.q_strideB = p.q_strideM * options.seq_length;
+      p.k_strideB = p.k_strideM * options.seq_length_kv;
+      p.v_strideB = p.v_strideM * options.seq_length_kv;
+      p.bias_strideB = p.bias_strideH * options.head_number;
     }
 
     // launch kernel :)
@@ -864,6 +937,7 @@ public:
       return result;
     }
     kernel_fn<<<p.getBlocksGrid(), p.getThreadsGrid(), smem_bytes>>>(p);
+    std::cout << "finish FMHA kernel" << std::endl;
 
     // Wait for completion
     result.error = cudaDeviceSynchronize();
@@ -879,7 +953,9 @@ public:
     result.passed = true;
 
     if (options.reference_check) {
+      std::cout << "before verification" << std::endl;
       result.passed = verify_();
+      std::cout << "finish verification" << std::endl;
     }
 
     //
@@ -997,6 +1073,7 @@ int run_attention(Options& options) {
 
   TestbedAttention<Attention> testbed(options);
 
+  std::cout << "Before profile.\n";
   Result result = testbed.profile();
   if (!result.passed) {
     std::cout << "Profiling CUTLASS attention has failed.\n";
@@ -1025,12 +1102,12 @@ int main(int argc, char const **args) {
   }
 
   if (__CUDACC_VER_MAJOR__ < 11 || props.major < 8) {
-  
+
     //
     // This example requires an NVIDIA Ampere-architecture GPU.
     //
 
-    std::cout 
+    std::cout
       << "CUTLASS's CUTLASS Attention example requires a GPU of NVIDIA's Ampere Architecture or "
       << "later (compute capability 80 or greater).\n";
 
@@ -1042,7 +1119,7 @@ int main(int argc, char const **args) {
   //
 
   Options options;
-  
+
   options.parse(argc, args);
 
   if (options.help) {
@@ -1069,19 +1146,22 @@ int main(int argc, char const **args) {
   // 64 keys, and parital results can be stored in the register file.
   // If head size is greater than 64, each block operates over 32 queries and 128 keys,
   // and partial results are stored in shared memory.
-  if (options.head_size_v > 64) {
-    static int const kQueriesPerBlock = 32;
-    static int const kKeysPerBlock = 128;
-    if (options.head_size_v <= kKeysPerBlock) {
-      return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
-    } else {
-      return run_attention<kQueriesPerBlock, kKeysPerBlock, false>(options);
-    }
-  } else {
-    static int const kQueriesPerBlock = 64;
-    static int const kKeysPerBlock = 64;
-    return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
-  }
+//  if (options.head_size_v > 64) {
+//    static int const kQueriesPerBlock = 32;
+//    static int const kKeysPerBlock = 128;
+//    if (options.head_size_v <= kKeysPerBlock) {
+//      return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
+//    } else {
+//      return run_attention<kQueriesPerBlock, kKeysPerBlock, false>(options);
+//    }
+//  } else {
+//    static int const kQueriesPerBlock = 64;
+//    static int const kKeysPerBlock = 64;
+//    return run_attention<kQueriesPerBlock, kKeysPerBlock, true>(options);
+//  }
+//  run_attention<32, 128, true>(options);
+  run_attention<32, 128, false>(options);
+//  run_attention<128, 128, true>(options);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
