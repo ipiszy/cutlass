@@ -113,6 +113,48 @@ to_tiled_mma_sm100_ts(
     TAs...>, TMs...>{};
 }
 
+template <class a_type, class b_type, class c_type, class sf_type,
+          int M, int N, UMMA::Major a_major, UMMA::Major b_major,
+          UMMA::ScaleIn a_neg, UMMA::ScaleIn b_neg, class... TAs, class... TMs>
+CUTE_HOST_DEVICE constexpr
+auto
+to_tiled_mma_sm100_ts(
+    TiledMMA<MMA_Atom<
+      MMA_Traits<SM100_MMA_MXF8F6F4_SS<a_type, b_type, c_type, sf_type,
+                    M, N, a_major, b_major, a_neg, b_neg>>,
+      TAs...>, TMs...>) {
+
+  return TiledMMA<MMA_Atom<
+    MMA_Traits<SM100_MMA_MXF8F6F4_TS<a_type, b_type, c_type, sf_type,
+                                M, N,
+                                a_major, b_major,
+                                a_neg, b_neg>>,
+    TAs...>, TMs...>{};
+}
+
+template <class a_type, class b_type, class c_type, class sf_type,
+          int M, int N, UMMA::Major a_major, UMMA::Major b_major,
+          UMMA::ScaleIn a_neg, UMMA::ScaleIn b_neg, class... TAs, class... TMs>
+CUTE_HOST_DEVICE constexpr
+auto
+to_tiled_mma_sm100_ts(
+    TiledMMA<MMA_Atom<
+      SM100_MMA_MXF8F6F4_SS<a_type, b_type, c_type, sf_type,
+                    M, N,
+                    a_major,
+                    b_major,
+                    a_neg,
+                    b_neg>,
+      TAs...>, TMs...>) {
+  return TiledMMA<MMA_Atom<
+    SM100_MMA_MXF8F6F4_TS<a_type, b_type, c_type, sf_type,
+                                M, N,
+                                a_major, b_major,
+                                a_neg, b_neg>,
+    TAs...>, TMs...>{};
+}
+
+
 template<uint32_t RegCount>
 CUTLASS_DEVICE
 void warpgroup_reg_set() {

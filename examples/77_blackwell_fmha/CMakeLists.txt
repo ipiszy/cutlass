@@ -54,7 +54,7 @@ set(TEST_MLA_BASIC --b=1 --k=512 --verify)
 
 if(NOT WIN32 AND (NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang")) AND (CUTLASS_NVCC_ARCHS MATCHES 100a))
 
-  foreach(PREC fp8 fp16)
+  foreach(PREC fp8 fp16 mxfp8)
     string(TOUPPER "${PREC}" PREC_MACRO)
 
     cutlass_example_add_executable(
@@ -69,7 +69,7 @@ if(NOT WIN32 AND (NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang")) AND (CUTLASS_NVCC
         )
     target_include_directories(77_blackwell_fmha_${PREC} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_definitions(77_blackwell_fmha_${PREC} PRIVATE ${PREC_MACRO})
-  
+
     cutlass_example_add_executable(
         77_blackwell_fmha_gen_${PREC}
         77_blackwell_fmha_gen.cu

@@ -378,6 +378,15 @@ make_tma_copy_C_sm100(CopyOp                  const& copy_op,
 // Experimental Make TMA Atom
 ///////////////////////////////////
 
+// namespace {
+// template<typename T>
+// struct DebugType {
+//   using type [[deprecated("debug type name")]] = T;
+//   static_assert(std::is_same_v<T, void>);
+// };
+// }  // namespace
+
+
 template <class TmaInternalType = void,
           class CopyOp,
           class GEngine, class GLayout,
@@ -428,6 +437,7 @@ make_tma_atom_A_sm100(CopyOp                  const& copy_op,
 
   // Prefer TmaInternalType if specified. Fallback to GEngine::value_type
   using TmaType = conditional_t<is_same<void, TmaInternalType>::value, typename GEngine::value_type, TmaInternalType>;
+  // [[maybe_unused]] DebugType<decltype(cta_v_tile)> debug;
   return detail::make_tma_copy_atom<TmaType>(copy_op, gtensor, slayout, num_multicast, cta_v_tile);
 }
 

@@ -80,20 +80,28 @@ using namespace cute;
 
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
 
+// namespace {
+// template<typename T>
+// struct DebugType {
+//   using type [[deprecated("debug type name")]] = T;
+//   static_assert(std::is_same_v<T, void>);
+// };
+// }  // namespace
+
 TEST(SM100Only_Device_Gemm_ue8m0xe5m2n_ue8m0xe5m2t_void_f8t_bstensorop_f32, 128x128x128_1x2x1_1sm_auto) {
   // Describe A and B tensors
-  using ElementA = cutlass::mx_float8_t<cutlass::float_e5m2_t>;
+  using ElementA = cutlass::mx_float8_t<cutlass::float_e4m3_t>;
   constexpr int AlignA = 16;
-  using GmemLayoutA = cutlass::layout::ColumnMajor;
-  using ElementB = cutlass::mx_float8_t<cutlass::float_e5m2_t>;
+  using GmemLayoutA = cutlass::layout::RowMajor;
+  using ElementB = cutlass::mx_float8_t<cutlass::float_e4m3_t>;
   constexpr int AlignB = 16;
-  using GmemLayoutB = cutlass::layout::RowMajor;
+  using GmemLayoutB = cutlass::layout::ColumnMajor;
 
   // Describe C and D tensors
   using ElementC = void;
   constexpr int AlignC = 16;
   using GmemLayoutC = cutlass::layout::RowMajor;
-  using ElementD = cutlass::float_e5m2_t;
+  using ElementD = cutlass::float_e4m3_t;
   constexpr int AlignD = 16;
   using GmemLayoutD = cutlass::layout::RowMajor;
 
@@ -104,9 +112,11 @@ TEST(SM100Only_Device_Gemm_ue8m0xe5m2n_ue8m0xe5m2t_void_f8t_bstensorop_f32, 128x
   
   // Tile and cluster shapes
   // Collective MMA takes tile shape of the MMA operation as input
-  using MmaTileShape_MNK = Shape<_128,_128,_128>;
+  // using MmaTileShape_MNK = Shape<_128,_128,_128>;
+  using MmaTileShape_MNK = Shape<_128,_128,_64>;
   // Cluster size for multicast
   using ClusterShape_MNK = Shape<_1,_2,_1>;
+  // using ClusterShape_MNK = Shape<_1,_1,_1>;
 
   //
   // Construct CollectiveEpilogue
@@ -122,6 +132,17 @@ TEST(SM100Only_Device_Gemm_ue8m0xe5m2n_ue8m0xe5m2t_void_f8t_bstensorop_f32, 128x
       cutlass::epilogue::collective::EpilogueScheduleAuto                   // Epilogue schedule policy
     >::CollectiveOp;
 
+  using CollectiveEpilogue_f8 = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp,      // Arch and Tensorop spec
+      MmaTileShape_MNK, ClusterShape_MNK,                                   // Mma instruction tile shape, cluster shape
+      cutlass::epilogue::collective::EpilogueTileAuto,                      // Epilogue subtile shape. Auto will find a suitable tile shape
+      ElementAccumulator, ElementCompute,                                   // Mma instr's accumulator type and compute precision for epilogue
+      ElementC, GmemLayoutC, AlignC,                                        // C tensor description
+      ElementD, GmemLayoutD, AlignD,                                        // D tensor description
+      cutlass::epilogue::collective::EpilogueScheduleAuto                   // Epilogue schedule policy
+    >::CollectiveOp;
+
+
   //
   // Construct CollectiveMainloop
   //
@@ -134,8 +155,24 @@ TEST(SM100Only_Device_Gemm_ue8m0xe5m2n_ue8m0xe5m2t_void_f8t_bstensorop_f32, 128x
       MmaTileShape_MNK, ClusterShape_MNK,                                   // Mma instruction tile shape, cluster shape
       // Epilogue's SMEM usage that needs to be subtracted from overall SMEM capacity 
       cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>,
-      cutlass::gemm::collective::KernelScheduleAuto    // Kernel schedule policy. Auto or using targeted scheduling policy
+      // cutlass::gemm::collective::KernelScheduleAuto    // Kernel schedule policy. Auto or using targeted scheduling policy
+      cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100    // Kernel schedule policy. Auto or using targeted scheduling policy
     >::CollectiveOp;
+
+  using CollectiveMainloop_f8 = typename cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp,      // Arch and Tensorop spec
+      cutlass::float_e4m3_t, GmemLayoutA, AlignA,                                        // A tensor elem type, layout and alignment requirement
+      cutlass::float_e4m3_t, GmemLayoutB, AlignB,                                        // B tensor elem type, layout and alignment requirement
+      ElementAccumulator,                                                   // Mma instruction accumulator type
+      MmaTileShape_MNK, ClusterShape_MNK,                                   // Mma instruction tile shape, cluster shape
+      // Epilogue's SMEM usage that needs to be subtracted from overall SMEM capacity 
+      cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>,
+      // cutlass::gemm::collective::KernelScheduleAuto    // Kernel schedule policy. Auto or using targeted scheduling policy
+      cutlass::gemm::KernelTmaWarpSpecialized1SmSm100    // Kernel schedule policy. Auto or using targeted scheduling policy
+    >::CollectiveOp;
+
+  // [[maybe_unused]] DebugType<CollectiveMainloop_f8> debug_type_A;
+
 
   // Create Gemm Kernel using CollectiveEpilogue and CollectiveMainloop created by the builders
   using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
@@ -143,10 +180,19 @@ TEST(SM100Only_Device_Gemm_ue8m0xe5m2n_ue8m0xe5m2t_void_f8t_bstensorop_f32, 128x
       CollectiveMainloop,
       CollectiveEpilogue
     >;
+
+   using GemmKernel_f8 = cutlass::gemm::kernel::GemmUniversal<
+      Shape<int,int,int,int>,
+      CollectiveMainloop_f8,
+      CollectiveEpilogue_f8
+    >;
   
+  using Gemm_f8 = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel_f8>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
   // Run tests
+  // auto pass = test::gemm::device::TestAll<Gemm_f8>();
   auto pass = test::gemm::device::TestAll<Gemm>();
+  // bool pass = true;
   // Check results
   EXPECT_TRUE(pass);
 }
