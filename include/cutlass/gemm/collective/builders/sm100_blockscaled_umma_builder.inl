@@ -41,7 +41,7 @@ namespace cutlass::gemm::collective {
 
 namespace detail {
 
-// Returns the maximum number of smem tiles that can be used with a given smem capacity, or overrides with manual count. 
+// Returns the maximum number of smem tiles that can be used with a given smem capacity, or overrides with manual count.
 template <
   int CapacityBytes,
   class ElementA,
@@ -121,7 +121,7 @@ struct CollectiveBuilder<
     cute::enable_if_t<
       // Blockscaled Gemm
       (cute::is_base_of_v<KernelScheduleBlockScaledGemmSm100, BuilderScheduleTag> ||
-       cute::is_same_v<KernelScheduleAuto, BuilderScheduleTag>) 
+       cute::is_same_v<KernelScheduleAuto, BuilderScheduleTag>)
        &&
       // Alignment check
       detail::sm1xx_blockscaled_gemm_is_aligned<typename detail::blockscaled::blockscaled_type<BuilderScheduleTag, ElementPairA>::data_type,
@@ -188,7 +188,7 @@ struct CollectiveBuilder<
       ClusterShape_MNK{}, AtomThrID{}));
 
   using GmemTiledCopySFB = decltype(cutlass::gemm::collective::detail::sm100_cluster_shape_to_tma_atom_SFB(
-      ClusterShape_MNK{}, AtomThrID{})); 
+      ClusterShape_MNK{}, AtomThrID{}));
 
   using GmemTiledCopyPairA = decltype(cute::make_tuple(GmemTiledCopyA{}, GmemTiledCopySFA{}));
   using GmemTiledCopyPairB = decltype(cute::make_tuple(GmemTiledCopyB{}, GmemTiledCopySFB{}));
@@ -202,9 +202,9 @@ struct CollectiveBuilder<
       UmmaMajorA, ElementAMma_SmemAllocType, BlockTileA_M, BlockTileA_K>());
 
   // A single indivisible block will hold 4 scale factors of 128 rows/columns (A/B matrix).
-  // 4 is chosen to make consecutive 32bits of data to have scale factors for only a single row (col). 32bits corresponds to the TMEM word size 
+  // 4 is chosen to make consecutive 32bits of data to have scale factors for only a single row (col). 32bits corresponds to the TMEM word size
   using Blk_MN    = typename Sm1xxBlkScaledConfig::Blk_MN;
-  using Blk_SF    = typename Sm1xxBlkScaledConfig::Blk_SF; 
+  using Blk_SF    = typename Sm1xxBlkScaledConfig::Blk_SF;
   using Blk_Elems = decltype(Blk_MN{} * Blk_SF{});
   using SmemLayoutAtomSFA = decltype(Sm1xxBlkScaledConfig::deduce_smem_layoutSFA(TiledMma{}, TileShape_MNK{}));
   using SmemLayoutAtomsA = decltype(cute::make_tuple(SmemLayoutAtomA{}, SmemLayoutAtomSFA{}));
@@ -255,7 +255,7 @@ struct CollectiveBuilder<
       Sm100ReducedSmemCapacityBytes, ElementAMma_SmemAllocType, ElementBMma_SmemAllocType, SmemTileShape, SmemLayoutAtomSFA, SmemLayoutAtomSFB>(StageCountType{});
   static_assert(PipelineStages > 0, "Smem usage is too high. Can't create any SMEM buffers for A, B, SFA, and SFB.");
 
-  using DispatchPolicy = 
+  using DispatchPolicy =
     cute::conditional_t<IsArrayOfPointersGemm,
       cutlass::gemm::MainloopSm100ArrayTmaUmmaWarpSpecializedBlockScaled<
           PipelineStages,

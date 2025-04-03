@@ -328,10 +328,18 @@ template<
 >
 struct FwdRunner {
 
-#ifdef FP8
+#if defined(FP8) || defined(MXFP8)
   using Element = cutlass::float_e4m3_t;
 #else
   using Element = cutlass::half_t;
+#endif
+
+#ifdef MXFP8
+  using SFElement = cutlass::float_ue8m0_t;
+  using CollectiveElement = cutlass::mx_float8_t<Element>;
+#else
+  using SFElement = std::nullptr_t;
+  using CollectiveElement = Element;
 #endif
 
   using ElementAccumulatorQK = float;
@@ -354,7 +362,7 @@ struct FwdRunner {
 
   using Mainloop = 
     cutlass::fmha::collective::Sm100FmhaFwdMainloopTmaWarpspecialized<
-      Element, ElementAccumulatorQK, ElementAccumulatorPV,
+      Element, SFElement, CollectiveElement, ElementAccumulatorQK, ElementAccumulatorPV,
       TileShape, StrideQ, StrideK, StrideV,
       ActiveMask
     >;
@@ -385,6 +393,9 @@ struct FwdRunner {
   DeviceAllocation<Element> block_Q;
   DeviceAllocation<Element> block_K;
   DeviceAllocation<Element> block_V;
+  DeviceAllocation<SFElement> block_SFQ;
+  DeviceAllocation<SFElement> block_SFK;
+  DeviceAllocation<SFElement> block_SFV;
   DeviceAllocation<ElementOut> block_O;
   DeviceAllocation<ElementAccumulatorPV> block_LSE;
   DeviceAllocation<ElementOut> block_ref_O;
@@ -937,7 +948,9 @@ int main_single(int argc, char const **args) {
       run_fwd_32(fusion, options, hw_info);
     }
     else if (options.d <= 64) {
+#ifndef MXFP8
       run_fwd_64(fusion, options, hw_info);
+#endif
     }
     else if (options.d <= 128) {
       run_fwd_128(fusion, options, hw_info);

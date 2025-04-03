@@ -55,5 +55,11 @@
 #define CUTLASS_TRACE_HOST(x)
 #endif
 
+template<typename T>
+struct DebugType {
+  using type [[deprecated("debug type name")]] = T;
+  static_assert(std::is_same_v<T, void>);
+};
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 

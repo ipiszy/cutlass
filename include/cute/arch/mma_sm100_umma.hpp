@@ -47,7 +47,7 @@ struct SM100_MMA_TF32_SS
 {
   static_assert(M == 64 || M == 128, "SM100_MMA_TF32 M-mode size should be 64 or 128 for 1 CTA cluster MMA.");
   static_assert((M == 64  && (N % 8 == 0)  && (8 <= N)  && (N <= 256)) ||
-                (M == 128 && (N % 16 == 0) && (16 <= N) && (N <= 256)), 
+                (M == 128 && (N % 16 == 0) && (16 <= N) && (N <= 256)),
                 "SM100_MMA_TF32 N-mode size should be a multiple of 8 between 8 and 256 for M=64,\
                  or a multiple of 16 between 16 and 256 for M=128.");
 
@@ -1035,6 +1035,48 @@ struct SM100_MMA_MXF8F6F4_SS
   }
 };
 
+template <class a_type, class b_type, class c_type, class sf_type,
+          int M, int N, UMMA::Major a_major, UMMA::Major b_major,
+          UMMA::ScaleIn a_neg = UMMA::ScaleIn::One, UMMA::ScaleIn b_neg = UMMA::ScaleIn::One>
+struct SM100_MMA_MXF8F6F4_TS
+{
+  static_assert(M == 128, "SM100_MMA_MXF8F6F4_TS M-mode size should be 64 or 128 for 1 CTA cluster MMA.");
+  static_assert((N % 8 == 0) && (8 <= N) && (N <= 256), "SM100_MMA_MXF8F6F4_TS N-mode size should be a multiple of 8 between 8 and 256.");
+
+  using DRegisters = void;
+  using ARegisters = uint32_t[1];
+  using BRegisters = uint64_t[1];
+  using CRegisters = uint32_t[1];
+  using SFARegisters = uint32_t[1];
+  using SFBRegisters = uint32_t[1];
+
+  CUTE_HOST_DEVICE static void
+  fma(uint32_t const& tmem_a,
+      uint64_t const& desc_b,
+      uint32_t const& tmem_c,
+      uint32_t const& scaleC,
+      uint64_t const& idescE,
+      uint32_t const& tsfa_addr,
+      uint32_t const& tsfb_addr)
+  {
+#if defined(CUTE_ARCH_TCGEN05_MXF8F6F4_MMA_ENABLED)
+    if (cute::elect_one_sync()) {
+      asm volatile(
+        "{\n\t"
+        ".reg .pred p;\n\t"
+        "setp.ne.b32 p, %4, 0;\n\t"
+        "tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale [%0], [%1], %2, %3, [%5], [%6], p; \n\t"
+        "}\n"
+        :
+        : "r"(tmem_c), "r"(tmem_a), "l"(desc_b), "r"(uint32_t(idescE>>32)), "r"(scaleC), "r"(tsfa_addr), "r"(tsfb_addr));
+    }
+#else
+    CUTE_INVALID_CONTROL_PATH("Attempting to use SM100_MMA_F8F6F4_TS without CUTE_ARCH_TCGEN05_MXF8F6F4_MMA_ENABLED");
+#endif
+  }
+};
+
+
 template <class a_type, class b_type, class c_type,
           int M, int N, UMMA::Major a_major, UMMA::Major b_major,
           UMMA::ScaleIn a_neg = UMMA::ScaleIn::One, UMMA::ScaleIn b_neg = UMMA::ScaleIn::One,
@@ -1207,7 +1249,7 @@ struct SM100_MMA_MXF8F6F4_SS_SPARSE
 };
 
 struct SM100_MMA_F8F6F4_2x1SM_SS
-{  
+{
   using DRegisters = void;
   using ARegisters = uint64_t[1];
   using BRegisters = uint64_t[1];

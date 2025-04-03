@@ -181,6 +181,7 @@ struct CollectiveMma<
       append(MmaShapeA_MK{}, Int<DispatchPolicy::Stages>{}),
       cute::conditional_t<cutlass::gemm::detail::is_mn_major<StrideA>(), Step<_2,_1,_3>, Step<_1,_2,_3>>{}));
   // (MMA_TILE_N,MMA_TILE_K),MMA_N,MMA_K,PIPE)
+  // [[maybe_unused]] DebugType<SmemLayoutA> debug;
   using SmemLayoutB = decltype(UMMA::tile_to_mma_shape(
       SmemLayoutAtomB{},
       append(MmaShapeB_NK{}, Int<DispatchPolicy::Stages>{}),

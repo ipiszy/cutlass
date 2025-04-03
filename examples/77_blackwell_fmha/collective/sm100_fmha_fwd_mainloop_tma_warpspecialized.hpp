@@ -47,6 +47,8 @@ using namespace cute;
 
 template<
   class Element_,
+  class SFElement_,
+  class CollectiveElement_,
   class ElementQK_,
   class ElementPV_,
   class TileShape_,
@@ -63,6 +65,8 @@ template<
 struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
   using Element = Element_;
+  using SFElement = SFElement_;
+  using CollectiveElement = CollectiveElement_;
   using ElementQK = ElementQK_;
   using ElementPV = ElementPV_;
   using TileShape = TileShape_;
@@ -73,10 +77,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
   static constexpr int StageCountQ = 2;
   static constexpr int StageCountKV = sizeof(Element_) == 1 ? 4 : 3;
+  static constexpr bool BlockScaleEnabled = std::is_same_v<Element, CollectiveElement>;
 
   using StagesQ = cutlass::gemm::collective::StageCount<StageCountQ>;
   using StagesKV = cutlass::gemm::collective::StageCount<StageCountKV>;
-  
+
   using ClusterShape = Shape<_1, _1, _1>;
 
   static const int Alignment = 128 / sizeof_bits_v<Element>;
@@ -86,21 +91,23 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
   using TileShapePV = decltype(select<0,2,1>(TileShapeQK{}));
 
   using CollectiveMmaQK = typename cutlass::gemm::collective::CollectiveBuilder<
-      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp,
-      Element, StrideQ, Alignment,
-      Element, StrideK, Alignment,
+      cutlass::arch::Sm100,
+      std::conditional_t<BlockScaleEnabled, cutlass::arch::OpClassTensorOp, cutlass::arch::OpClassBlockScaledTensorOp>,
+      CollectiveElement, StrideQ, Alignment,
+      CollectiveElement, StrideK, Alignment,
       ElementQK,
       TileShapeQK, ClusterShape, cutlass::gemm::collective::StageCount<3> /* we change it later anyways*/,
-      cutlass::gemm::KernelTmaWarpSpecialized1SmSm100>::CollectiveOp;
+      std::conditional_t<BlockScaleEnabled, cutlass::gemm::KernelTmaWarpSpecialized1SmSm100, cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100>>::CollectiveOp;
 
   using CollectiveMmaPV = typename cutlass::gemm::collective::CollectiveBuilder<
-      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp,
+      cutlass::arch::Sm100,
+      std::conditional_t<BlockScaleEnabled, cutlass::arch::OpClassTensorOp, cutlass::arch::OpClassBlockScaledTensorOp>,
       // the stride for A does not matter since we do not load from smem at all
-      Element, StrideK, Alignment,
-      Element, decltype(select<1,0,2>(StrideV{})), Alignment,
+      CollectiveElement, StrideK, Alignment,
+      CollectiveElement, decltype(select<1,0,2>(StrideV{})), Alignment,
       ElementPV,
       TileShapePV, ClusterShape, cutlass::gemm::collective::StageCount<3> /* we change it later anyways*/,
-      cutlass::gemm::KernelTmaWarpSpecialized1SmSm100>::CollectiveOp;
+      std::conditional_t<BlockScaleEnabled, cutlass::gemm::KernelTmaWarpSpecialized1SmSm100, cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100>>::CollectiveOp;
 
   using SmemLayoutQ = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutA{}, Int<StageCountQ>{}));
   using SmemLayoutK = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutB{}, Int<StageCountKV>{}));
@@ -531,7 +538,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     Tensor tScS_P = tScS.compose(make_layout(make_shape(_128{}, tilePlikeFP32)));
 
     // Each thread owns a single row
-      using TMEM_LOAD = SM100_TMEM_LOAD_32dp32b32x; // 4x32 threads with 128 cols of 32b elem 
+    using TMEM_LOAD = SM100_TMEM_LOAD_32dp32b32x; // 4x32 threads with 128 cols of 32b elem
     using TMEM_STORE = SM100_TMEM_STORE_32dp32b32x;  // 4x32 threads with 128 cols of 8b elem
     using TMEM_STORE_V = SM100_TMEM_STORE_32dp32b2x;   // 4x32 threads with 2 cols of 32b elem
 
@@ -613,7 +620,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     NumericArrayConverter<Element, ElementQK, kConversionsPerStep> convert;
 
     const int kReleasePipeCount = 10;  // must be multiple of 2
-    
+
     order_s.wait();
 
     CUTLASS_PRAGMA_UNROLL
@@ -637,7 +644,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       }
       tTMEM_STORErS_x4_e[i / kConversionsPerStep] = convert(in_conv);
 
-      
+
       if (i == size(tTMEM_LOADrS) - kReleasePipeCount) {
         order_s.arrive();
       }
@@ -691,7 +698,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     cute::add(local_row_sum_2, local_row_sum_2, local_row_sum_3);
     cute::add(local_row_sum_f32x2, local_row_sum_f32x2, local_row_sum_2);
     float local_row_sum = local_row_sum_f32x2.x + local_row_sum_f32x2.y;
-    
+
     row_sum = local_row_sum;
 
     if (final_call) {
@@ -787,14 +794,14 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     // good values would be either 32 or 64
     const int kCorrectionTileSize = 32 / sizeof(ElementOut);
 
-    using TMEM_LOAD = std::conditional_t<kCorrectionTileSize == 32, SM100_TMEM_LOAD_32dp32b32x, SM100_TMEM_LOAD_32dp32b16x>;  // 4x32 threads with 64 cols of 32b elem 
+    using TMEM_LOAD = std::conditional_t<kCorrectionTileSize == 32, SM100_TMEM_LOAD_32dp32b32x, SM100_TMEM_LOAD_32dp32b16x>;  // 4x32 threads with 64 cols of 32b elem
 
     typename CollectiveMmaPV::TiledMma mma;
     Tensor cO = make_identity_tensor(select<0,1>(TileShapePV{}));
     Tensor tOtO = partition_fragment_C(mma, select<0,1>(TileShapePV{}));
     Tensor tOcO = mma.get_slice(0).partition_C(cO);
     Tensor tOsO = mma.get_slice(0).partition_C(sO);
-    
+
     Tensor tOtO_i = logical_divide(tOtO, make_layout(make_shape(_128{}, Int<kCorrectionTileSize>{})));
     Tensor tOcO_i = logical_divide(tOcO, make_layout(make_shape(_128{}, Int<kCorrectionTileSize>{})));
     Tensor tOsO_i = logical_divide(tOsO, make_layout(make_shape(_128{}, Int<kCorrectionTileSize>{})));
@@ -809,7 +816,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     auto tiled_tmem_load = make_tmem_copy(TMEM_LOAD{}, tOtO_i(make_coord(_, _), _0{}));
     auto thr_tmem_load   = tiled_tmem_load.get_slice(thread_idx);
-    
+
     Tensor tTMEM_LOADtO = thr_tmem_load.partition_S(tOtO_i(make_coord(_, _), _));
     Tensor tTMEM_LOADcO = thr_tmem_load.partition_D(tOcO_i(make_coord(_, _), _));
     Tensor tTMEM_LOADsO = thr_tmem_load.partition_D(tOsO_i(make_coord(_, _), _));
@@ -824,9 +831,9 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       Tensor tTMEM_LOADsO_i = tTMEM_LOADsO(_, _0{}, _0{}, i);
 
       Tensor tTMrO = make_tensor<ElementPV>(shape(tTMEM_LOADcO(_, _0{}, _0{}, i)));
-      
+
       copy(tiled_tmem_load, tTMEM_LOADtO_i, tTMrO);
-      
+
 #ifndef ONLY_SOFTMAX
       CUTLASS_PRAGMA_UNROLL
       for (int j = 0; j < size(tTMrO); j += 2) {
@@ -872,24 +879,24 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     // good values would be either 32 or 64
     const int kCorrectionTileSize = 16;
 
-    using TMEM_LOAD = SM100_TMEM_LOAD_32dp32b16x;  // 4x32 threads with 64 cols of 32b elem 
+    using TMEM_LOAD = SM100_TMEM_LOAD_32dp32b16x;  // 4x32 threads with 64 cols of 32b elem
     using TMEM_STORE = SM100_TMEM_STORE_32dp32b16x;  // 4x32 threads with 64 cols of 32b elem
 
     typename CollectiveMmaPV::TiledMma mma;
     Tensor cO = make_identity_tensor(select<0,1>(TileShapePV{}));
     Tensor tOtO = partition_fragment_C(mma, select<0,1>(TileShapePV{}));
     Tensor tOcO = mma.get_slice(0).partition_C(cO);
-    
+
     Tensor tOtO_i = tOtO.compose(make_layout(make_shape(_128{}, Int<kCorrectionTileSize>{})));
     Tensor tOcO_i = tOcO.compose(make_layout(make_shape(_128{}, Int<kCorrectionTileSize>{})));
 
     tOtO_i.data() = tOtO_i.data().get() + tmem_O;
-    
+
     auto tiled_tmem_load = make_tmem_copy(TMEM_LOAD{}, tOtO_i);
     auto thr_tmem_load   = tiled_tmem_load.get_slice(thread_idx);
     auto tiled_tmem_store = make_tmem_copy(TMEM_STORE{}, tOtO_i);
     auto thr_tmem_store   = tiled_tmem_store.get_slice(thread_idx);
-    
+
     Tensor tTMEM_LOADtO = thr_tmem_load.partition_S(tOtO_i);
     Tensor tTMEM_LOADcO = thr_tmem_load.partition_D(tOcO_i);
     Tensor tTMEM_STOREtO = thr_tmem_store.partition_D(tOtO_i);
@@ -899,7 +906,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     float2 scale_f32x2 = make_float2(scale, scale);
 
     Tensor tTMrO = make_tensor<ElementPV>(make_shape(shape(tTMEM_LOADcO), Int<128 / kCorrectionTileSize>{}));
-    
+
     auto copy_in = [&](int i) {
       Tensor tTMEM_LOADtO_i = tTMEM_LOADtO;
       tTMEM_LOADtO_i.data() = tTMEM_LOADtO_i.data().get() + uint32_t(i * kCorrectionTileSize);
@@ -961,7 +968,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     Tensor cS = make_identity_tensor(select<0,1>(TileShapeQK{}));
     Tensor tScS = typename CollectiveMmaQK::TiledMma{}.get_slice(0).partition_C(cS);
-    
+
     Tensor tStS_v = tStS.compose(make_layout(make_shape(_128{}, _2{})));
     Tensor tScS_v = tScS.compose(make_layout(make_shape(_128{}, _2{})));
 
@@ -1066,7 +1073,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     pipeline_o.consumer_release(pipeline_o_consumer_state);
     ++pipeline_o_consumer_state;
-    
+
     pipeline_epi.producer_commit(pipeline_epi_producer_state);
     ++pipeline_epi_producer_state;
 

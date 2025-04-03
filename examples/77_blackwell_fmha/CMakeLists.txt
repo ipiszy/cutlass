@@ -78,6 +78,33 @@ if(NOT WIN32 AND (NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang")))
   target_compile_definitions(77_blackwell_fmha_gen_fp8 PRIVATE FP8)
 
   cutlass_example_add_executable(
+      77_blackwell_fmha_mxfp8
+      77_blackwell_fmha.cu
+      TEST_COMMAND_OPTIONS
+      TEST_BASIC
+      # TEST_CAUSAL
+      # TEST_VARLEN
+      # TEST_HDIM64
+      # TEST_GQA)
+      )
+  target_include_directories(77_blackwell_fmha_mxfp8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_definitions(77_blackwell_fmha_mxfp8 PRIVATE MXFP8)
+
+  cutlass_example_add_executable(
+      77_blackwell_fmha_gen_mxfp8
+      77_blackwell_fmha_gen.cu
+      TEST_COMMAND_OPTIONS
+      TEST_GEN_BASIC
+      # TEST_GEN_VARLEN
+      # TEST_GEN_HDIM64
+      # TEST_GEN_GQA
+      # TEST_GEN_REMAP
+      # TEST_GEN_CACHEONLY)
+      )
+  target_include_directories(77_blackwell_fmha_gen_mxfp8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_definitions(77_blackwell_fmha_gen_mxfp8 PRIVATE MXFP8)
+
+  cutlass_example_add_executable(
       77_blackwell_fmha_fp16
       77_blackwell_fmha.cu
       TEST_COMMAND_OPTIONS

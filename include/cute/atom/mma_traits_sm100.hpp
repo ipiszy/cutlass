@@ -2779,6 +2779,95 @@ struct MMA_Traits<SM100_MMA_MXF8F6F4_SS<a_type, b_type, c_type, sf_type,
 
 template <class a_type, class b_type, class c_type, class sf_type,
           int M, int N, UMMA::Major a_major, UMMA::Major b_major,
+          UMMA::ScaleIn a_neg, UMMA::ScaleIn b_neg>
+struct MMA_Traits<SM100_MMA_MXF8F6F4_TS<a_type, b_type, c_type, sf_type,
+                                M, N, a_major, b_major,
+                                a_neg, b_neg>>
+{
+  using ValTypeD = c_type;
+  using ValTypeA = a_type;
+  using ValTypeB = b_type;
+  using ValTypeC = c_type;
+  using ValTypeSFA = sf_type;
+  using ValTypeSFB = sf_type;
+  static_assert(cute::sizeof_bits_v<a_type> <= 8 && cute::sizeof_bits_v<b_type> <= 8, "SM100_MMA_MXF8F6F4_TS supports types with leq 8bit types");
+
+  // Logical shape-K is always 256bits, transform to units of elements
+  constexpr static int K = 32;
+  constexpr static int SFVecSize = 32;
+
+  using FrgTypeA = UMMA::tmem_frg_1sm<a_type>;
+  using FrgTypeB = UMMA::smem_desc<b_major>;
+  using FrgTypeC = UMMA::tmem_frg_1sm<c_type>;
+  using FrgTypeSFA = UMMA::tmem_sf_frg<sf_type, SFVecSize, 1, true>;
+  using FrgTypeSFB = UMMA::tmem_sf_frg<sf_type, SFVecSize, 1, false>;
+
+  static_assert(sizeof_bits_v<ValTypeA> <= sizeof_bits_v<uint8_t> &&
+                sizeof_bits_v<ValTypeB> <= sizeof_bits_v<uint8_t>);
+
+
+  using Shape_MNK = Shape<Int<M>,Int<N>,Int<K>>;
+  using ThrID   = Layout<_1>;
+  using ALayout = Layout<Shape <_1,Shape <Int<M>,Int<K>>>,
+                         Stride<_0,Stride<    _1,Int<M>>>>;
+  using BLayout = Layout<Shape <_1,Shape <Int<N>,Int<K>>>,
+                         Stride<_0,Stride<    _1,Int<N>>>>;
+  using CLayout = Layout<Shape <_1,Shape <Int<M>,Int<N>>>,
+                         Stride<_0,Stride<    _1,Int<M>>>>;
+  using MMA_ScaleFactor = SM100_MMA_MXF8F6F4_TS<a_type, b_type, c_type, sf_type,
+                                M, (round_up(N, 128)), a_major, b_major,
+                                a_neg, b_neg>;
+
+  // Accumulate or overwrite C.   1: read C, 0: ignore C [clear accumulators]
+  UMMA::ScaleOut accumulate_ = UMMA::ScaleOut::One;
+  uint32_t tsfa_addr_ = 0;
+  uint32_t tsfb_addr_ = 0;
+
+  UMMA::InstrDescriptorBlockScaled idesc_ = UMMA::make_instr_desc_block_scaled<
+    a_type, b_type, c_type, sf_type, M, N, a_major, b_major, a_neg, b_neg>();
+
+  template <class TD, class DLayout,
+            class TA, class ALayout,
+            class TB, class BLayout,
+            class TC, class CLayout>
+  CUTE_HOST_DEVICE constexpr friend
+  void
+  mma_unpack(MMA_Traits          const& traits,
+             Tensor<TD, DLayout>      & D,
+             Tensor<TA, ALayout> const& A,
+             Tensor<TB, BLayout> const& B,
+             Tensor<TC, CLayout> const& C)
+  {
+    static_assert(is_tmem<TD>::value, "Expected tmem in MMA_Atom::call");
+    static_assert(is_tmem<TA>::value, "Expected tmem in MMA_Atom::call");
+    static_assert(is_rmem<TB>::value, "Expected desc registers in MMA_Atom::call");
+    static_assert(is_tmem<TC>::value, "Expected tmem in MMA_Atom::call");
+
+    uint32_t tmem_a = raw_pointer_cast(A.data());
+    uint64_t desc_b = B[0];
+    uint32_t tmem_c = raw_pointer_cast(D.data());
+    uint64_t idesc = UMMA::make_runtime_instr_desc_block_scaled<>(traits.idesc_, traits.tsfa_addr_, traits.tsfb_addr_);
+
+    SM100_MMA_MXF8F6F4_TS<a_type, b_type, c_type, sf_type,
+                  M, N,
+                  a_major, b_major,
+                  a_neg, b_neg>::fma(tmem_a, desc_b, tmem_c, uint32_t(traits.accumulate_), idesc, traits.tsfa_addr_, traits.tsfb_addr_);
+  }
+
+  // Construct an executable MMA_traits with sp into set.
+  template <class TSFA, class TSFALayout, class TSFB, class TSFBLayout>
+  CUTE_HOST_DEVICE constexpr
+  MMA_Traits<SM100_MMA_MXF8F6F4_SS<a_type, b_type, c_type, sf_type,
+                              M, N, a_major, b_major, a_neg, b_neg>>
+  with(UMMA::ScaleOut accumulate, Tensor<TSFA, TSFALayout> const& SFA, Tensor<TSFB, TSFBLayout> const& SFB) const {
+    uint32_t tmem_sfa_addr = raw_pointer_cast(SFA.data());
+    uint32_t tmem_sfb_addr = raw_pointer_cast(SFB.data());
+    return {accumulate, tmem_sfa_addr, tmem_sfb_addr, idesc_};
+  }
+};
+
+template <class a_type, class b_type, class c_type, class sf_type,
+          int M, int N, UMMA::Major a_major, UMMA::Major b_major,
           UMMA::ScaleIn a_neg, UMMA::ScaleIn b_neg,
           class... sparse_args>
 struct MMA_Traits<SM100_MMA_MXF8F6F4_SS_SPARSE<a_type, b_type, c_type, sf_type,
@@ -3053,7 +3142,7 @@ struct MMA_Traits<SM100_MMA_F8F6F4_2x1SM_SS, a_type, b_type, c_type,
   static_assert(cute::sizeof_bits_v<a_type> <= 8 && cute::sizeof_bits_v<b_type> <= 8, "SM100_MMA_F8F6F4_2x1SM_SS supports types with leq 8bit types");
   static_assert(M == 128 || M == 256, "SM100_MMA_F8F6F4_2x1SM_SS M-mode size should be 64 or 128 for 1 CTA cluster MMA.");
   static_assert((N % 32 == 0) && (32 <= N) && (N <= 256), "SM100_MMA_F8F6F4_2x1SM_SS N-mode size should be a multiple of 32 between 32 and 256.");
- 
+
   using FrgTypeA = UMMA::smem_desc<a_major>;
   using FrgTypeB = UMMA::smem_desc<b_major>;
   using FrgTypeC = UMMA::tmem_frg_2sm<c_type>;
