@@ -61,6 +61,12 @@ template<
   // (2, 1, 1) means that they are stacked (best for large Q since it loads the least K/V)
   // (1, 2, 1) means they sit side by side (best for small Q / large K)
   class ThreadShape = Shape<_2, _1, _1>
+#ifdef MXFP8
+  ,
+  class StrideSFQ_,
+  class StrideSFK_,
+  class StrideSFV_
+#endif
 >
 struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
@@ -73,6 +79,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
   using StrideQ = StrideQ_;
   using StrideK = StrideK_;
   using StrideV = StrideV_;
+#ifdef MXFP8
+  using StrideSFQ = StrideSFQ_;
+  using StrideSFK = StrideSFK_;
+  using StrideSFV = StrideSFV_;
+#endif
   using Mask = Mask_;
 
   static constexpr int StageCountQ = 2;
@@ -112,13 +123,27 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
   using SmemLayoutQ = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutA{}, Int<StageCountQ>{}));
   using SmemLayoutK = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutB{}, Int<StageCountKV>{}));
   using SmemLayoutV = decltype(unstageSmemLayout(typename CollectiveMmaPV::SmemLayoutB{}, Int<StageCountKV>{}));
+#ifdef MXFP8
+  using SmemLayoutSFQ = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutSFA{}, Int<StageCountQ>{}));
+  using SmemLayoutSFK = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutSFB{}, Int<StageCountKV>{}));
+  using SmemLayoutSFV = decltype(unstageSmemLayout(typename CollectiveMmaPV::SmemLayoutSFB{}, Int<StageCountKV>{}));
+#endif
 
   struct TensorStorage {
-    cute::array_aligned<Element, cute::cosize_v<SmemLayoutQ>> smem_q;
+    cute::array_aligned<CollectiveElement, cute::cosize_v<SmemLayoutQ>> smem_q;
+#ifdef MXFP8
+    cute::array_aligned<SFElement, cute::cosize_v<SmemLayoutSFQ>> smem_sfq;
+#endif
     union {
-      cute::array_aligned<Element, cute::cosize_v<SmemLayoutK>> smem_k;
-      cute::array_aligned<Element, cute::cosize_v<SmemLayoutV>> smem_v;
+      cute::array_aligned<CollectiveElement, cute::cosize_v<SmemLayoutK>> smem_k;
+      cute::array_aligned<CollectiveElement, cute::cosize_v<SmemLayoutV>> smem_v;
     };
+#ifdef MXFP8
+    union {
+      cute::array_aligned<SFElement, cute::cosize_v<SmemLayoutSFK>> smem_sfk;
+      cute::array_aligned<SFElement, cute::cosize_v<SmemLayoutSFV>> smem_sfv;
+    };
+#endif
   };
 
   enum class TmemAllocation : uint32_t {
@@ -173,9 +198,13 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
   using OrderBarrierSoftmax = cutlass::OrderedSequenceBarrier<
     /*stages*/ 1, /*groups*/ 2>;
 
-  static const int TransactionBytesLoadQ = cutlass::bits_to_bytes(cosize(take<0,3>(SmemLayoutQ{})) * cute::sizeof_bits_v<Element>);
+  static const int TransactionBytesLoadQ = cutlass::bits_to_bytes(cosize(take<0,3>(SmemLayoutQ{})) * cute::sizeof_bits_v<CollectiveElement>);
+  static const int TransactionBytesLoadKV = cutlass::bits_to_bytes(cosize(take<0,3>(SmemLayoutK{})) * cute::sizeof_bits_v<CollectiveElement>);
 
-  static const int TransactionBytesLoadKV = cutlass::bits_to_bytes(cosize(take<0,3>(SmemLayoutK{})) * cute::sizeof_bits_v<Element>);
+#ifdef MXFP8
+  static const int TransactionBytesLoadSFQ = cutlass::bits_to_bytes(cosize(take<0,3>(SmemLayoutSFQ{})) * cute::sizeof_bits_v<SFElement>);
+  static const int TransactionBytesLoadSFKV = cutlass::bits_to_bytes(cosize(take<0,3>(SmemLayoutSFK{})) * cute::sizeof_bits_v<SFElement>);
+#endif
 
   static_assert(cutlass::bits_to_bytes(cosize(take<0,3>(SmemLayoutK{})) * cute::sizeof_bits_v<Element>) == cutlass::bits_to_bytes(cosize(take<0,3>(SmemLayoutV{})) * cute::sizeof_bits_v<Element>), "K and V smem layouts must be of equal size");
 
@@ -184,6 +213,16 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     CollectiveMmaQK, CollectiveMmaPV,
     SmemLayoutQ, SmemLayoutK, SmemLayoutV,
     TensorStorage, PipelineQ, PipelineKV, Mask, TileShape
+#ifdef MXFP8
+    ,
+    SFElement,
+    StrideSFQ,
+    StrideSFK,
+    StrideSFV,
+    SmemLayoutSFQ,
+    SmemLayoutSFK,
+    SmemLayoutSFV
+#endif
   >;
 
   struct Arguments {

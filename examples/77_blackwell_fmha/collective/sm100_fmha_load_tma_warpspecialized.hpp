@@ -41,6 +41,7 @@
 
 namespace cutlass::fmha::collective {
 
+static constexpr int kSFBlockSize = 32;
 using namespace cute;
 
 template<
@@ -58,11 +59,23 @@ template<
   class PipelineKV,
   class Mask,
   class TileShape
+#ifdef MXFP8
+  ,
+  class SFElement,
+  class StrideSFQ,
+  class StrideSFK,
+  class StrideSFV,
+  class SmemLayoutSFQ,
+  class SmemLayoutSFK,
+  class SmemLayoutSFV
+#endif
 >
 struct Sm100FmhaLoadTmaWarpspecialized {
 
   using TileShapeQK = typename CollectiveMmaQK::TileShape;
   using TileShapePV = typename CollectiveMmaPV::TileShape;
+  using TileShapeSFQK = decltype(make_shape(get<0>(TileShapeQK{}), get<1>(TileShapeQK{}), get<2>(TileShapeQK{}) / kSFBlockSize));
+  using TileShapeSFPV = decltype(make_shape(get<0>(TileShapePV{}), get<1>(TileShapePV{}), get<2>(TileShapePV{}) / kSFBlockSize));
 
   struct Arguments {
     const Element* ptr_Q;
@@ -71,16 +84,37 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     StrideK dK;
     const Element* ptr_V;
     StrideV dV;
+
+#ifdef MXFP8
+    const SFElement* ptr_SFQ;
+    StrideSFQ dSFQ;
+    const SFElement* ptr_SFK;
+    StrideSFK dSFK;
+    const SFElement* ptr_SFV;
+    StrideSFV dSFV;
+#endif
   };
 
   using TMA_Q = typename CollectiveMmaQK::Params::TMA_A;
   using TMA_K = typename CollectiveMmaQK::Params::TMA_B;
   using TMA_V = typename CollectiveMmaPV::Params::TMA_B;
 
+#ifdef MXFP8
+  using TMA_SFQ = typename CollectiveMmaQK::Params::TMA_SFA;
+  using TMA_SFK = typename CollectiveMmaQK::Params::TMA_SFB;
+  using TMA_SFV = typename CollectiveMmaPV::Params::TMA_SFB;
+#endif
+
   struct Params {
     TMA_Q tma_load_q;
     TMA_K tma_load_k;
     TMA_V tma_load_v;
+
+#ifdef MXFP8
+    TMA_SFQ tma_load_sfq;
+    TMA_SFK tma_load_sfk;
+    TMA_SFV tma_load_sfv;
+#endif
   };
 
   template<class ProblemShape>
@@ -96,6 +130,15 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     auto dK = args.dK;
     auto dV = args.dV;
     auto problem_shape_qk = problem_shape;
+
+#ifdef MXFP8
+    auto ptr_SFQ = args.ptr_SFQ;
+    auto ptr_SFK = args.ptr_SFK;
+    auto ptr_SFV = args.ptr_SFV;
+    auto dSFQ = args.dSFQ;
+    auto dSFK = args.dSFK;
+    auto dSFV = args.dSFV;
+#endif
 
     if constexpr (is_variable_length_v<tuple_element_t<0, ProblemShape>>) {
       auto cumulative_length_q = get<0>(problem_shape).cumulative_length;
@@ -127,7 +170,12 @@ struct Sm100FmhaLoadTmaWarpspecialized {
         problem_shape_qk,
         typename CollectiveMmaQK::Arguments {
             ptr_Q, dQ,
-            ptr_K, dK,
+            ptr_K, dK
+#ifdef MXFP8
+            ,
+            ptr_SFQ, make_layout(make_shape(get<0>(TileShapeSFQK{}), get<2>(TileShapeSFQK{})), dSFQ),
+            ptr_SFK, make_layout(make_shape(get<1>(TileShapeSFQK{}), get<2>(TileShapeSFQK{})), dSFK)
+#endif
         }, /*workspace=*/ nullptr);
 
     auto problem_shape_pv = select<0,2,1,3>(problem_shape_qk);
@@ -136,12 +184,23 @@ struct Sm100FmhaLoadTmaWarpspecialized {
         typename CollectiveMmaPV::Arguments {
             ptr_K, dK,  // never used, dummy
             ptr_V, select<1,0,2>(dV),
+#ifdef MXFP8
+            ,
+            ptr_SFQ, make_layout(make_shape(get<0>(TileShapeSFQK{}), get<2>(TileShapeSFQK{})), dSFQ),  // dummy
+            ptr_SFV, make_layout(make_shape(get<2>(TileShapeSFPV{}), get<1>(TileShapeSFPV{})), dSFV)
+#endif
         }, /*workspace=*/ nullptr);
 
     return Params{
         params_qk.tma_load_a,
         params_qk.tma_load_b,
         params_pv.tma_load_b
+#ifdef MXFP8
+        ,
+        params_qk.tma_load_sfa,
+        params_qk.tma_load_sfb,
+        params_pv.tma_load_sfb
+#endif
     };
   }
 
@@ -151,6 +210,11 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     cute::prefetch_tma_descriptor(params.tma_load_q.get_tma_descriptor());
     cute::prefetch_tma_descriptor(params.tma_load_k.get_tma_descriptor());
     cute::prefetch_tma_descriptor(params.tma_load_v.get_tma_descriptor());
+#ifdef MXFP8
+    cute::prefetch_tma_descriptor(params.tma_load_sfq.get_tma_descriptor());
+    cute::prefetch_tma_descriptor(params.tma_load_sfk.get_tma_descriptor());
+    cute::prefetch_tma_descriptor(params.tma_load_sfv.get_tma_descriptor());
+#endif
   }
 
   template<class BlkCoord, class ProblemShape, class ParamsProblemShape>
@@ -199,10 +263,25 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     Tensor tSgQ_qdl = mma_qk.partition_A(gQ_qdl);
     Tensor sQ = make_tensor(make_smem_ptr(storage.smem_q.data()), SmemLayoutQ{});
     auto [tQgQ_qdl, tQsQ] = tma_partition(
-      params.tma_load_q, _0{}, make_layout(_1{}), 
+      params.tma_load_q, _0{}, make_layout(_1{}),
       group_modes<0,3>(sQ), group_modes<0,3>(tSgQ_qdl)
     );
     Tensor tQgQ = tQgQ_qdl(_, _, _0{}, get<2>(blk_coord_q));
+
+#ifdef MXFP8
+    Tensor mSFQ_qdl_p = params.tma_load_sfq.get_tma_tensor(
+        make_shape(get<0>(problem_size), get<2>(problem_size) / kSFBlockSize, get<3>(problem_size)));
+    Tensor mSFQ_qdl = domain_offset(make_coord(q_offs_0, _0{}, make_coord(_0{}, q_offs_2_1)), mSFQ_qdl_p);
+    Tensor gSFQ_qdl = local_tile(mSFQ_qdl, TileShapeSFQK{}, make_coord(_, _, _), Step<_1, X, _1>{});
+    Tensor tSgSFQ_qdl = mma_qk.partition_A(gSFQ_qdl);
+    Tensor sSFQ = make_tensor(make_smem_ptr(storage.smem_sfq.data()), SmemLayoutQ{});
+
+    auto [tSFQgQ_qdl, tSFQsQ] = tma_partition(
+      params.tma_load_sfq, _0{}, make_layout(_1{}),
+      group_modes<0,3>(sSFQ), group_modes<0,3>(tSgSFQ_qdl)
+    );
+    Tensor tSFQgQ = tSFQgQ_qdl(_, _, _0{}, get<2>(blk_coord_q));
+#endif
 
     // compute gK, sK
     Tensor mK_kdl_p = params.tma_load_k.get_tma_tensor(select<1,2,3>(problem_shape));
@@ -231,6 +310,32 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     );
     Tensor tKgK = tKgK_kdl(_, _, _0{}, get<2>(blk_coord_kv));
 
+#ifdef MXFP8
+    Tensor mSFK_kdl_p = params.tma_load_sfk.get_tma_tensor(
+        make_shape(get<1>(problem_size), get<2>(problem_size) / kSFBlockSize, get<3>(problem_size)));
+
+    // if constexpr (is_variable_length_v<tuple_element_t<1, ParamsProblemShape>>) {
+    //   auto cumulative_length = get<1>(params_problem_shape).cumulative_length;
+    //   if (cumulative_length != nullptr) {
+    //     int max_length = get<1>(params_problem_shape).max_length;
+    //     kv_offs_0 = max_length - get<1>(problem_shape);
+    //     kv_offs_2_1 = cumulative_length[get<2,1>(blk_coord_kv)] + get<1>(problem_shape);
+    //     get<2,1>(blk_coord_kv) = 0;
+    //   }
+    // }
+
+    Tensor mSFK_kdl = domain_offset(make_coord(kv_offs_0, _0{}, make_coord(_0{}, kv_offs_2_1)), mSFK_kdl_p);
+
+    Tensor gSFK_kdl = local_tile(mSFK_kdl, TileShapeSFQK{}, make_coord(_, _, _), Step<X, _1, _1>{});
+    Tensor tSgSFK_kdl = mma_qk.partition_B(gSFK_kdl);
+    Tensor sSFK = make_tensor(make_smem_ptr(storage.smem_sfk.data()), SmemLayoutSFK{});
+    auto [tSFKgK_kdl, tSFKsK] = tma_partition(
+      params.tma_load_sfk, _0{}, make_layout(_1{}),
+      group_modes<0,3>(sSFK), group_modes<0,3>(tSgSFK_kdl)
+    );
+    Tensor tSFKgK = tSFKgK_kdl(_, _, _0{}, get<2>(blk_coord_kv));
+#endif
+
     // compute gV, sV
     ThrMMA mma_pv = typename CollectiveMmaPV::TiledMma{}.get_slice(0);
     Tensor mV_dkl_p = params.tma_load_v.get_tma_tensor(select<2,1,3>(problem_shape));
@@ -246,6 +351,21 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     );
     auto tVgV = tVgV_dkl(_, _0{}, _, get<2>(blk_coord_kv));
 
+#ifdef MXFP8
+    Tensor mSFV_dkl_p = params.tma_load_sfv.get_tma_tensor(select<2,1,3>(problem_shape));
+
+    Tensor mSFV_dkl = domain_offset(make_coord(_0{}, kv_offs_0, make_coord(_0{}, kv_offs_2_1)), mSFV_dkl_p);
+
+    Tensor gSFV_dkl = local_tile(mSFV_dkl, TileShapeSFPV{}, make_coord(_, _, _), Step<X, _1, _1>{});
+    Tensor tOgSFV_dkl = mma_pv.partition_B(gSFV_dkl);
+    Tensor sSFV = make_tensor(make_smem_ptr(storage.smem_sfv.data()), SmemLayoutSFV{});
+    auto [tSFVgV_dkl, tSFVsV] = tma_partition(
+      params.tma_load_sfv, _0{}, make_layout(_1{}),
+      group_modes<0,3>(sSFV), group_modes<0,3>(tOgSFV_dkl)
+    );
+    auto tSFVgV = tSFVgV_dkl(_, _0{}, _, get<2>(blk_coord_kv));
+#endif
+
     // blk_coord in decomposed in terms of TileShape, not TileShapeQK
     // As such, it needs to be transformed as
     // (a,b,c): a -> 2*a (Q0) 2*a+1 (Q1)
@@ -260,6 +380,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     if (lane_predicate) {
       auto tma_barrier = pipeline_q.producer_get_barrier(pipeline_q_producer_state);
       copy(params.tma_load_q.with(*tma_barrier, 0), tQgQ(_, q0_index), tQsQ(_, pipeline_q_producer_state.index()));
+#ifdef MXFP8
+      copy(params.tma_load_sfq.with(*tma_barrier, 0), tSFQgQ(_, q0_index), tSFQsQ(_, pipeline_q_producer_state.index()));
+#endif
     }
     ++pipeline_q_producer_state;
 
@@ -269,6 +392,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     if (lane_predicate) {
       auto tma_barrier = pipeline_kv.producer_get_barrier(pipeline_kv_producer_state);
       copy(params.tma_load_k.with(*tma_barrier, 0), tKgK(_, k_index), tKsK(_, pipeline_kv_producer_state.index()));
+#ifdef MXFP8
+      copy(params.tma_load_sfk.with(*tma_barrier, 0), tSFKgK(_, k_index), tSFKsK(_, pipeline_kv_producer_state.index()));
+#endif
     }
     ++pipeline_kv_producer_state;
 
@@ -277,6 +403,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     if (lane_predicate) {
       auto tma_barrier = pipeline_q.producer_get_barrier(pipeline_q_producer_state);
       copy(params.tma_load_q.with(*tma_barrier, 0), tQgQ(_, q1_index), tQsQ(_, pipeline_q_producer_state.index()));
+#ifdef MXFP8
+      copy(params.tma_load_sfq.with(*tma_barrier, 0), tSFQgQ(_, q1_index), tSFQsQ(_, pipeline_q_producer_state.index()));
+#endif
     }
     ++pipeline_q_producer_state;
 
@@ -285,6 +414,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     if (lane_predicate) {
       auto tma_barrier = pipeline_kv.producer_get_barrier(pipeline_kv_producer_state);
       copy(params.tma_load_v.with(*tma_barrier, 0), tVgV(_, k_index), tVsV(_, pipeline_kv_producer_state.index()));
+#ifdef MXFP8
+      copy(params.tma_load_sfv.with(*tma_barrier, 0), tSFVgV(_, k_index), tSFVsV(_, pipeline_kv_producer_state.index()));
+#endif
     }
     ++pipeline_kv_producer_state;
     k_index += 1;
@@ -298,6 +430,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
       if (lane_predicate) {
         auto tma_barrier = pipeline_kv.producer_get_barrier(pipeline_kv_producer_state);
         copy(params.tma_load_k.with(*tma_barrier, 0), tKgK(_, k_index), tKsK(_, pipeline_kv_producer_state.index()));
+#ifdef MXFP8
+        copy(params.tma_load_sfk.with(*tma_barrier, 0), tSFKgK(_, k_index), tSFKsK(_, pipeline_kv_producer_state.index()));
+#endif
       }
       ++pipeline_kv_producer_state;
 
@@ -306,6 +441,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
       if (lane_predicate) {
         auto tma_barrier = pipeline_kv.producer_get_barrier(pipeline_kv_producer_state);
         copy(params.tma_load_v.with(*tma_barrier, 0), tVgV(_, k_index), tVsV(_, pipeline_kv_producer_state.index()));
+#ifdef MXFP8
+        copy(params.tma_load_sfv.with(*tma_barrier, 0), tSFVgV(_, k_index), tSFVsV(_, pipeline_kv_producer_state.index()));
+#endif
       }
       ++pipeline_kv_producer_state;
       k_index += 1;

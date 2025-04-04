@@ -215,11 +215,14 @@ struct Sm100FmhaFwdKernelTmaWarpspecialized {
     }
     pipeline_load_q_params.is_leader = lane_predicate && (role == WarpRole::Load);
     pipeline_load_q_params.transaction_bytes = CollectiveMainloop::TransactionBytesLoadQ;
+#ifdef MXFP8
+    pipeline_load_q_params.transaction_bytes += CollectiveMainloop::TransactionBytesLoadSFQ;
+#endif
     typename CollectiveMainloop::PipelineQ pipeline_load_q(
       shared_storage.pipelines.load_q,
       pipeline_load_q_params,
       ClusterShape{},  cute::true_type{}, /*mask calc*/cute::false_type{});
-    
+
     typename CollectiveMainloop::PipelineKV::Params pipeline_load_kv_params;
     if (role == WarpRole::Load) {
       pipeline_load_kv_params.role = CollectiveMainloop::PipelineKV::ThreadCategory::Producer;
@@ -229,6 +232,9 @@ struct Sm100FmhaFwdKernelTmaWarpspecialized {
     }
     pipeline_load_kv_params.is_leader = lane_predicate && (role == WarpRole::Load);
     pipeline_load_kv_params.transaction_bytes = CollectiveMainloop::TransactionBytesLoadKV;
+#ifdef MXFP8
+    pipeline_load_kv_params.transaction_bytes += CollectiveMainloop::TransactionBytesLoadSFKV;
+#endif
     typename CollectiveMainloop::PipelineKV pipeline_load_kv(
       shared_storage.pipelines.load_kv,
       pipeline_load_kv_params,
