@@ -106,6 +106,8 @@ enum class InitStyle {
   kOne, kLinearStride128, kLinearStride1, kRandom, kNone
 };
 
+static constexpr int kSFBlockSize = 32;
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Command line options parsing
@@ -550,25 +552,36 @@ struct FwdRunner {
     auto shape_QO = select<0,2,3>(problem_size);
     auto shape_KV = select<1,2,3>(problem_size);
     auto shape_LSE = select<0,3>(problem_size);
+    auto shape_SFQ = make_shape(get<0>(problem_size), get<2>(problem_size) / kSFBlockSize, get<3>(problem_size));
+    auto shape_SFK = make_shape(get<1>(problem_size), get<2>(problem_size) / kSFBlockSize, get<3>(problem_size));
+    auto shape_SFV = make_shape(get<1>(problem_size) / kSFBlockSize, get<2>(problem_size), get<3>(problem_size));
 
     int SQ = size<0>(problem_size);
     int SK = size<1>(problem_size);
     int D = size<2>(problem_size);
+    int SF_D = D / kSFBlockSize;
+    int SF_V = SK / kSFBlockSize;
     int H  = size<3,0>(problem_size);
     int H_K = size<3,0,1>(problem_size);
     int H_Q = size<3,0,0>(problem_size);
     int B = size<3,1>(problem_size);
 
     stride_Q = make_stride(H*D , _1{}, make_stride(make_stride(D, H_Q*D), H*D*SQ));
+    stride_SFQ = make_stride(H*SF_D , _1{}, make_stride(make_stride(D, H_Q*SF_D), H*SF_D*SQ));
     stride_O = stride_Q;
     stride_K = make_stride(H_K*D , _1{}, make_stride(make_stride(_0{}, D), H_K*D*SK));
     stride_V = stride_K;
+    stride_SFK = make_stride(H_K*SF_D , _1{}, make_stride(make_stride(_0{}, SF_D), H_K*SF_D*SK));
+    stride_SFV = make_stride(H_K*D , _1{}, make_stride(make_stride(_0{}, D), H_K*D*SF_V));
     stride_LSE = make_stride(_1{}, make_stride(make_stride(SQ, SQ*H_Q), SQ*H));
 
     if (kIsVarlen) {
       get<2,1>(stride_Q) = 0;
+      get<2,1>(stride_SFQ) = 0;
       get<2,1>(stride_K) = 0;
       get<2,1>(stride_V) = 0;
+      get<2,1>(stride_SFK) = 0;
+      get<2,1>(stride_SFV) = 0;
       get<2,1>(stride_O) = 0;
       get<1,1>(stride_LSE) = 0;
     }
@@ -577,6 +590,9 @@ struct FwdRunner {
     block_K.reset(size(shape_KV), kIsVarlen ? D*SK*H_K : 0);
     block_V.reset(size(shape_KV), kIsVarlen ? D*SK*H_K : 0);
     block_O.reset(size(shape_QO), kIsVarlen ? D*SQ*H : 0);
+    block_SFQ.reset(size(shape_SFQ), kIsVarlen ? SF_D * SQ * H : 0);
+    block_SFK.reset(size(shape_SFK), kIsVarlen ? SF_D * SK * H : 0);
+    block_SFV.reset(size(shape_SFV), kIsVarlen ? D * SF_V * H : 0);
     block_LSE.reset(size(shape_LSE));
     block_ref_O.reset(size(shape_QO));
     block_ref_LSE.reset(size(shape_LSE));
@@ -584,6 +600,9 @@ struct FwdRunner {
     initialize_block(block_Q, seed + 2023, options.init_style_q);
     initialize_block(block_K, seed + 2022, options.init_style_k);
     initialize_block(block_V, seed + 2021, options.init_style_v);
+    initialize_block(block_SFQ, seed + 2020, InitStyle::kRandom);
+    initialize_block(block_SFK, seed + 2019, InitStyle::kRandom);
+    initialize_block(block_SFV, seed + 2018, InitStyle::kRandom);
 
     if ( ! cumulative_seqlen_q.empty()) {
       device_cumulative_seqlen_q.reset(cumulative_seqlen_q.size());
