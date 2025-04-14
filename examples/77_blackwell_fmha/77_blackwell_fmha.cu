@@ -103,8 +103,6 @@ enum class InitStyle {
   kOne, kLinearStride128, kLinearStride1, kRandom, kNone
 };
 
-static constexpr int kSFBlockSize = 32;
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Command line options parsing
@@ -212,7 +210,7 @@ struct Options {
       causal = false;
     }
     cmd.get_cmd_line_argument("sm-count", sm_count, defaults.sm_count);
-    
+
     get_init_style_argument(cmd, "init-style", init_style_q, defaults.init_style_q);
     get_init_style_argument(cmd, "init-style", init_style_k, defaults.init_style_q);
     get_init_style_argument(cmd, "init-style", init_style_v, defaults.init_style_q);
@@ -349,7 +347,7 @@ struct FwdRunner {
   using ProblemShapeRegular = cute::tuple<int, int, int, cute::tuple<cute::tuple<int, int>, int>>;
   using ProblemShapeVarlen = cute::tuple<VariableLength, VariableLength, int, cute::tuple<cute::tuple<int, int>, int>>;
   using ProblemShapeType = std::conditional_t<kIsVarlen, ProblemShapeVarlen, ProblemShapeRegular>;
-  
+
   using StrideQ = cute::tuple<int, _1, cute::tuple<cute::tuple<int, int>, int>>;  // Q D (H_G H_R B)
   using StrideK = cute::tuple<int, _1, cute::tuple<cute::tuple<_0, int>, int>>;  // K D (H_G H_R B)
   using StrideV = StrideK;
@@ -359,7 +357,7 @@ struct FwdRunner {
   static constexpr bool kIsPersistent = find_option_t<Tag::kIsPersistent, true_type, KernelOptions...>::value;
   using TileScheduler = std::conditional_t<kIsPersistent, cutlass::fmha::kernel::PersistentTileScheduler, cutlass::fmha::kernel::IndividualTileScheduler>;
 
-  using Mainloop = 
+  using Mainloop =
     cutlass::fmha::collective::Sm100FmhaFwdMainloopTmaWarpspecialized<
       Element, SFElement, CollectiveElement, ElementAccumulatorQK, ElementAccumulatorPV,
       TileShape, StrideQ, StrideK, StrideV,
@@ -377,6 +375,13 @@ struct FwdRunner {
       TileScheduler
     >>;
 
+#ifdef MXFP8
+  using Sm1xxBlkScaledConfig = typename Mainloop::Sm1xxBlkScaledConfig;
+  using LayoutSFQ = typename Mainloop::LayoutSFQ;
+  using LayoutSFK = typename Mainloop::LayoutSFK;
+  using LayoutSFV = typename Mainloop::LayoutSFV;
+#endif
+
   //
   // Data members
   //
@@ -387,6 +392,11 @@ struct FwdRunner {
   StrideV stride_V;
   StrideO stride_O;
   StrideLSE stride_LSE;
+#ifdef MXFP8
+  LayoutSFQ layout_SFQ;
+  LayoutSFK layout_SFK;
+  LayoutSFV layout_SFV;
+#endif
   uint64_t seed = 0;
 
   DeviceAllocation<Element> block_Q;
@@ -448,7 +458,7 @@ struct FwdRunner {
 
     bool passed_O = (max_diff < kMaxDiffThresh) && (mean_diff < kMeanDiffThresh);
     if (! passed_O) {
-      std::cerr << "failed O: max diff " << max_diff 
+      std::cerr << "failed O: max diff " << max_diff
                 << " mean " << mean_diff << std::endl;
     }
 
@@ -457,7 +467,7 @@ struct FwdRunner {
     bool passed_LSE = true;  // future work
     // bool passed_LSE = (max_diff < kMaxDiffThresh) && (mean_diff < kMeanDiffThresh);
     // if ( ! passed_LSE) {
-    //   std::cerr << "failed LSE: max diff " << max_diff 
+    //   std::cerr << "failed LSE: max diff " << max_diff
     //             << " mean " << mean_diff << std::endl;
     // }
 
@@ -470,7 +480,7 @@ struct FwdRunner {
 
     // generate Q as --b times
     //    gaussian (--Q, --Q / 2) sampled positive
-    //    track cumulative 
+    //    track cumulative
     std::mt19937 rng(0x202305151552ull);
     std::normal_distribution<double> dist_q(get<0>(problem_size), get<0>(problem_size) / 2);
     std::normal_distribution<double> dist_kv(get<1>(problem_size), get<1>(problem_size) / 2);
@@ -530,7 +540,7 @@ struct FwdRunner {
     int h_r = options.h / options.h_k;
     assert(options.h % options.h_k == 0);
     auto problem_shape_in = cute::make_tuple(options.q, options.k, options.d, cute::make_tuple(cute::make_tuple(h_r, options.h_k), options.b));
-    
+
     ProblemShapeType problem_shape;
     decltype(problem_shape_in) problem_size;
 
@@ -564,21 +574,15 @@ struct FwdRunner {
     int B = size<3,1>(problem_size);
 
     stride_Q = make_stride(H*D , _1{}, make_stride(make_stride(D, H_Q*D), H*D*SQ));
-    stride_SFQ = make_stride(H*SF_D , _1{}, make_stride(make_stride(D, H_Q*SF_D), H*SF_D*SQ));
     stride_O = stride_Q;
     stride_K = make_stride(H_K*D , _1{}, make_stride(make_stride(_0{}, D), H_K*D*SK));
     stride_V = stride_K;
-    stride_SFK = make_stride(H_K*SF_D , _1{}, make_stride(make_stride(_0{}, SF_D), H_K*SF_D*SK));
-    stride_SFV = make_stride(H_K*D , _1{}, make_stride(make_stride(_0{}, D), H_K*D*SF_V));
     stride_LSE = make_stride(_1{}, make_stride(make_stride(SQ, SQ*H_Q), SQ*H));
 
     if (kIsVarlen) {
       get<2,1>(stride_Q) = 0;
-      get<2,1>(stride_SFQ) = 0;
       get<2,1>(stride_K) = 0;
       get<2,1>(stride_V) = 0;
-      get<2,1>(stride_SFK) = 0;
-      get<2,1>(stride_SFV) = 0;
       get<2,1>(stride_O) = 0;
       get<1,1>(stride_LSE) = 0;
     }
@@ -597,9 +601,11 @@ struct FwdRunner {
     initialize_block(block_Q, seed + 2023, options.init_style_q);
     initialize_block(block_K, seed + 2022, options.init_style_k);
     initialize_block(block_V, seed + 2021, options.init_style_v);
+#ifdef MXFP8
     initialize_block(block_SFQ, seed + 2020, InitStyle::kRandom);
     initialize_block(block_SFK, seed + 2019, InitStyle::kRandom);
     initialize_block(block_SFV, seed + 2018, InitStyle::kRandom);
+#endif
 
     if ( ! cumulative_seqlen_q.empty()) {
       device_cumulative_seqlen_q.reset(cumulative_seqlen_q.size());
@@ -624,11 +630,23 @@ struct FwdRunner {
 
     ProblemShapeType problem_shape = initialize(options);
 
+#ifdef MXFP8
+    layout_SFQ = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(problem_shape);
+    layout_SFK = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(problem_shape);
+    layout_SFV = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(select<0,2,1,3>(problem_shape));
+#endif
     typename Operation::Arguments arguments{
       problem_shape,
       { block_Q.get(), stride_Q,
         block_K.get(), stride_K,
-        block_V.get(), stride_V },
+        block_V.get(), stride_V
+#ifdef MXFP8
+        ,
+        block_SFQ.get(), layout_SFQ,
+        block_SFK.get(), layout_SFK,
+        block_SFV.get(), layout_SFV
+#endif
+      },
       { block_O.get(), stride_O,
       block_LSE.get(), stride_LSE },
       hw_info
@@ -767,7 +785,7 @@ struct FwdRunner {
       passed = verify(problem_shape);
       if (passed) example_result.verified = true;
     }
-    
+
     if (!passed) {
       std::cerr << "Reference check failed" << std::endl;
       return example_result;
@@ -809,7 +827,7 @@ void run_fwd_128(Mask fusion, Options const & options, cutlass::KernelHardwareIn
       auto result = runner.run(options, hw_info);
       print_result(name, result, options.verbose);
     }
-    else 
+    else
     {
       FwdRunner<false, decltype(shape), void, Mask, decltype(kernel_options)...> runner;
       auto result = runner.run(options, hw_info);
@@ -838,7 +856,7 @@ void run_fwd_64(Mask fusion, Options const & options, cutlass::KernelHardwareInf
       auto result = runner.run(options, hw_info);
       print_result(name, result, options.verbose);
     }
-    else 
+    else
     {
       FwdRunner<false, decltype(shape), void, Mask, decltype(kernel_options)...> runner;
       auto result = runner.run(options, hw_info);

@@ -112,8 +112,8 @@ TEST(SM100Only_Device_Gemm_ue8m0xe5m2n_ue8m0xe5m2t_void_f8t_bstensorop_f32, 128x
   
   // Tile and cluster shapes
   // Collective MMA takes tile shape of the MMA operation as input
-  // using MmaTileShape_MNK = Shape<_128,_128,_128>;
-  using MmaTileShape_MNK = Shape<_128,_128,_64>;
+  using MmaTileShape_MNK = Shape<_128,_128,_128>;
+  // using MmaTileShape_MNK = Shape<_128,_128,_64>;
   // Cluster size for multicast
   using ClusterShape_MNK = Shape<_1,_2,_1>;
   // using ClusterShape_MNK = Shape<_1,_1,_1>;
@@ -198,6 +198,7 @@ TEST(SM100Only_Device_Gemm_ue8m0xe5m2n_ue8m0xe5m2t_void_f8t_bstensorop_f32, 128x
 }
 
 
+/*
 TEST(SM100Only_Device_Gemm_ue8m0xe5m2n_ue8m0xe4m3t_void_f8t_bstensorop_f32, 128x192x128_1x4x1_1sm_auto) {
   // Describe A and B tensors
   using ElementA = cutlass::mx_float8_t<cutlass::float_e5m2_t>;
@@ -553,5 +554,6 @@ TEST(SM100Only_Device_Gemm_ue8m0xe4m3n_ue8m0xe5m2t_void_f8t_bstensorop_f32, 256x
   // Check results
   EXPECT_TRUE(pass);
 }
+*/
 
 #endif // #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)

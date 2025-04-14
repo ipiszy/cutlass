@@ -59,6 +59,23 @@ add(float2      & c,
 
 CUTE_HOST_DEVICE
 void 
+sub(float2      & c,
+    float2 const& a, 
+    float2 const& b) 
+{
+#if defined(CUTE_ARCH_FLOAT2_MATH_ENABLED)
+  asm volatile("sub.f32x2 %0, %1, %2;\n"
+    : "=l"(reinterpret_cast<uint64_t      &>(c))
+    :  "l"(reinterpret_cast<uint64_t const&>(a)),
+       "l"(reinterpret_cast<uint64_t const&>(b)));
+#else
+  sub(c.x, a.x, b.x);
+  sub(c.y, a.y, b.y);
+#endif
+}
+
+CUTE_HOST_DEVICE
+void 
 mul(float2      & c,
     float2 const& a, 
     float2 const& b) 

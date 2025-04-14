@@ -61,12 +61,6 @@ template<
   // (2, 1, 1) means that they are stacked (best for large Q since it loads the least K/V)
   // (1, 2, 1) means they sit side by side (best for small Q / large K)
   class ThreadShape = Shape<_2, _1, _1>
-#ifdef MXFP8
-  ,
-  class StrideSFQ_,
-  class StrideSFK_,
-  class StrideSFV_
-#endif
 >
 struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
@@ -80,9 +74,10 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
   using StrideK = StrideK_;
   using StrideV = StrideV_;
 #ifdef MXFP8
-  using StrideSFQ = StrideSFQ_;
-  using StrideSFK = StrideSFK_;
-  using StrideSFV = StrideSFV_;
+  using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<kSFBlockSize>;
+  using LayoutSFQ = decltype(Sm1xxBlkScaledConfig::deduce_layoutSFA());
+  using LayoutSFK = decltype(Sm1xxBlkScaledConfig::deduce_layoutSFB());
+  using LayoutSFV = decltype(Sm1xxBlkScaledConfig::deduce_layoutSFB());
 #endif
   using Mask = Mask_;
 
@@ -126,6 +121,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 #ifdef MXFP8
   using SmemLayoutSFQ = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutSFA{}, Int<StageCountQ>{}));
   using SmemLayoutSFK = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutSFB{}, Int<StageCountKV>{}));
+  using SmemLayoutSFP = decltype(unstageSmemLayout(typename CollectiveMmaPV::SmemLayoutSFA{}, Int<2>{}));
   using SmemLayoutSFV = decltype(unstageSmemLayout(typename CollectiveMmaPV::SmemLayoutSFB{}, Int<StageCountKV>{}));
 #endif
 
@@ -143,6 +139,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       cute::array_aligned<SFElement, cute::cosize_v<SmemLayoutSFK>> smem_sfk;
       cute::array_aligned<SFElement, cute::cosize_v<SmemLayoutSFV>> smem_sfv;
     };
+    cute::array_aligned<SFElement, cute::cosize_v<SmemLayoutSFP>> smem_sfp;
 #endif
   };
 
@@ -150,6 +147,8 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     kSizeS = 128,
     kSizeO = 128,
     kSizeP = 32,
+    kSizeSF = 4,
+    kOffsetSF = 384,  // SF offset
     S0 = 0,
     S1 = S0 + kSizeS,
     V0 = S0,  // stats storage from softmax to correction
@@ -158,7 +157,13 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     P1 = S1 + kSizeP,
     O0 = S1 + kSizeS,
     O1 = O0 + kSizeO,
-    kEnd = O1 + kSizeO
+    SFQ0 = kOffsetSF,
+    SFQ1 = kSizeSF + SFQ0,
+    SFK = kSizeSF + SFQ1,
+    SFV = kSizeSF + SFK,
+    SFP0 = kSizeSF + SFV,
+    SFP1 = kSizeSF + SFP0,
+    kEnd = kSizeSF + SFP1
   };
 
   // indices for V0 / V1
@@ -216,9 +221,9 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 #ifdef MXFP8
     ,
     SFElement,
-    StrideSFQ,
-    StrideSFK,
-    StrideSFV,
+    LayoutSFQ,
+    LayoutSFK,
+    LayoutSFV,
     SmemLayoutSFQ,
     SmemLayoutSFK,
     SmemLayoutSFV
@@ -245,6 +250,9 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     float scale_softmax;
     float scale_softmax_log2;
+#ifdef MXFP8
+    float scale_mxfp8_log2;
+#endif
 
     float scale_output;
   };
@@ -265,11 +273,18 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       scale_softmax = 1.0f / (float) std::sqrt(get<2>(problem_shape));
     }
     float log2_e = static_cast<float>(std::log2(std::exp(1.0)));
+#ifdef MXFP8
+    // TODO: revisit whether rounding is correct.
+    float scale_mxfp8_log2 = static_cast<float>(std::log2(1.75f - 448.0f));
+#endif
 
     return Params{
         Load::to_underlying_arguments(problem_shape, args.load, workspace),
         args.scale_q * args.scale_k * scale_softmax,
         args.scale_q * args.scale_k * log2_e * scale_softmax,
+#ifdef MXFP8
+        scale_mxfp8_log2,
+#endif
         args.scale_v * args.inv_scale_o
     };
   }
@@ -305,7 +320,8 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       PipelineKV& pipeline_kv, typename PipelineKV::PipelineState& pipeline_kv_consumer_state,
       PipelineS& pipeline_s0, typename PipelineS::PipelineState& pipeline_s0_producer_state,
       PipelineS& pipeline_s1, typename PipelineS::PipelineState& pipeline_s1_producer_state,
-      PipelineO& pipeline_corr, typename PipelineO::PipelineState& pipeline_corr_producer_state) {
+      PipelineO& pipeline_corr, typename PipelineO::PipelineState& pipeline_corr_producer_state,
+      uint32_t tmem_base_ptr) {
 
     auto pipeline_q_release_state = pipeline_q_consumer_state;
     auto pipeline_kv_release_state = pipeline_kv_consumer_state;
@@ -352,6 +368,81 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     Tensor tOrP1 = tOrP;
     tOrP1.data() = tOrP1.data().get() + uint32_t(TmemAllocation::P1);
 
+#ifdef MXFP8
+    Tensor tCtSFQ0 = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFA>(
+      filter_zeros(typename CollectiveMmaQK::SmemLayoutAtomSFA{}));
+    tCtSFQ0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ0);
+    Tensor tCtSFQ1 = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFA>(
+      filter_zeros(typename CollectiveMmaQK::SmemLayoutAtomSFA{}));
+    tCtSFQ1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ1);
+    Tensor tCtSFK = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFB>(
+      filter_zeros(typename CollectiveMmaQK::SmemLayoutAtomSFB{}));
+    tCtSFK.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK);
+    Tensor tCtSFV = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFB>(
+      filter_zeros(typename CollectiveMmaPV::SmemLayoutAtomSFB{}));
+    tCtSFV.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFV);
+
+    auto tCsSFQ_compact = make_tensor(
+      make_smem_ptr(storage.smem_sfq.begin()), 
+      filter_zeros(typename CollectiveMmaQK::SmemLayoutSFA{})
+    );
+    auto tCsSFK_compact = make_tensor(
+      make_smem_ptr(storage.smem_sfk.begin()), 
+      filter_zeros(typename CollectiveMmaQK::SmemLayoutSFB{})
+    );
+    auto tCsSFV_compact = make_tensor(
+      make_smem_ptr(storage.smem_sfv.begin()), 
+      filter_zeros(typename CollectiveMmaPV::SmemLayoutSFB{})
+    );
+
+    // Create the SMEM to TMEM copy operations based on the MMA atom used (1CTA vs 2CTA)
+    using AtomThrID = typename CollectiveMmaQK::TiledMma::AtomThrID;
+    using UtccpOp = cute::conditional_t<(decltype(cute::size(AtomThrID{}) == Int<2>{})::value),
+      SM100_UTCCP_4x32dp128bit_2cta, SM100_UTCCP_4x32dp128bit_1cta>;
+    auto tiled_copy_s2t_SFQ = make_utccp_copy(UtccpOp{}, tCtSFQ0);
+    auto tiled_copy_s2t_SFK = make_utccp_copy(UtccpOp{}, tCtSFK);
+    auto tiled_copy_s2t_SFV = make_utccp_copy(UtccpOp{}, tCtSFV);
+  
+    auto thr_copy_s2t_SFQ = tiled_copy_s2t_SFQ.get_slice(0);
+    auto thr_tCsSFQ_s2t_ = thr_copy_s2t_SFQ.partition_S(tCsSFQ_compact);
+    // SMEM to TMEM copy operation requires source SMEM operand to be an SMEM descriptor
+    auto thr_tCsSFQ_s2t = get_utccp_smem_desc_tensor<UtccpOp>(thr_tCsSFQ_s2t_);
+    auto thr_tCtSFQ0_s2t = thr_copy_s2t_SFQ.partition_D(tCtSFQ0);
+    auto thr_tCtSFQ1_s2t = thr_copy_s2t_SFQ.partition_D(tCtSFQ1);
+  
+    auto thr_copy_s2t_SFK = tiled_copy_s2t_SFK.get_slice(0);
+    auto thr_tCsSFK_s2t_ = thr_copy_s2t_SFK.partition_S(tCsSFK_compact);
+    // SMEM to TMEM copy operation requires source SMEM operand to be an SMEM descriptor
+    auto thr_tCsSFK_s2t = get_utccp_smem_desc_tensor<UtccpOp>(thr_tCsSFK_s2t_);
+    auto thr_tCtSFK_s2t = thr_copy_s2t_SFK.partition_D(tCtSFK);
+
+    Tensor tCtSFP0 = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFA>(
+      filter_zeros(typename CollectiveMmaPV::SmemLayoutAtomSFA{}));
+    tCtSFP0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFP0);
+    Tensor tCtSFP1 = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFA>(
+      filter_zeros(typename CollectiveMmaPV::SmemLayoutAtomSFA{}));
+    tCtSFP1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFP1);
+
+    auto tCsSFP_compact = make_tensor(
+      make_smem_ptr(storage.smem_sfp.begin()), 
+      filter_zeros(typename CollectiveMmaPV::SmemLayoutSFA{})
+    );
+
+    auto tiled_copy_s2t_SFP = make_utccp_copy(UtccpOp{}, tCtSFP0);
+    auto thr_copy_s2t_SFP = tiled_copy_s2t_SFP.get_slice(0);
+    auto thr_tCsSFP_s2t_ = thr_copy_s2t_SFP.partition_S(tCsSFP_compact);
+    // SMEM to TMEM copy operation requires source SMEM operand to be an SMEM descriptor
+    auto thr_tCsSFP_s2t = get_utccp_smem_desc_tensor<UtccpOp>(thr_tCsSFP_s2t_);
+    auto thr_tCtSFP0_s2t = thr_copy_s2t_SFP.partition_D(tCtSFP0);
+    auto thr_tCtSFP1_s2t = thr_copy_s2t_SFP.partition_D(tCtSFP1);
+ 
+    auto thr_copy_s2t_SFV = tiled_copy_s2t_SFV.get_slice(0);
+    auto thr_tCsSFV_s2t_ = thr_copy_s2t_SFV.partition_S(tCsSFV_compact);
+    // SMEM to TMEM copy operation requires source SMEM operand to be an SMEM descriptor
+    auto thr_tCsSFV_s2t = get_utccp_smem_desc_tensor<UtccpOp>(thr_tCsSFV_s2t_);
+    auto thr_tCtSFV_s2t = thr_copy_s2t_SFV.partition_D(tCtSFV);
+#endif
+
     int k_index = 0;
     int v_index = 0;
     int q_index = 0;
@@ -360,6 +451,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     q_index = pipeline_q_consumer_state.index();
     pipeline_q.consumer_wait(pipeline_q_consumer_state);
     ++pipeline_q_consumer_state;
+#ifdef MXFP8
+    // if (cute::elect_one_sync()) {
+    //   copy(tiled_copy_s2t_SFQ, thr_tCsSFQ_s2t(_,_,_,_,q_index), thr_tCtSFQ0_s2t);
+    // }
+#endif
 
     Tensor tSrQ0 = tSrQ(_,_,_,q_index);
 
@@ -368,6 +464,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     k_index = pipeline_kv_consumer_state.index();
     pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
     ++pipeline_kv_consumer_state;
+#ifdef MXFP8
+    // if (cute::elect_one_sync()) {
+    //   copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK_s2t);
+    // }
+#endif
 
     // gemm Q1 * K1 -> S1
     pipeline_s0.producer_acquire(pipeline_s0_producer_state);
@@ -391,11 +492,22 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     }
 
     Tensor tSrQ1 = tSrQ(_,_,_,q_index);
+#ifdef MXFP8
+    // if (cute::elect_one_sync()) {
+    //   copy(tiled_copy_s2t_SFQ, thr_tCsSFQ_s2t(_,_,_,_,q_index), thr_tCtSFQ1_s2t);
+    // }
+#endif
 
     if constexpr (get<1>(ThreadShape{}) > 1) {
       k_index = pipeline_kv_consumer_state.index();
       pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
       ++pipeline_kv_consumer_state;
+
+#ifdef MXFP8
+      // if (cute::elect_one_sync()) {
+      //   copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK_s2t);
+      // }
+#endif
     }
 
     pipeline_s1.producer_acquire(pipeline_s1_producer_state);
@@ -414,6 +526,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     v_index = pipeline_kv_consumer_state.index();
     pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
     ++pipeline_kv_consumer_state;
+#ifdef MXFP8
+    // if (cute::elect_one_sync()) {
+    //   copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV_s2t);
+    // }
+#endif
 
     // this acquire returns the ownership of all of S0 to the mma warp
     // including the P0 part
@@ -422,13 +539,18 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     pipeline_corr.producer_acquire(pipeline_corr_producer_state);
     pipeline_s0.producer_acquire(pipeline_s0_producer_state);
 
+#ifdef MXFP8
+    // if (cute::elect_one_sync()) {
+    //   copy(tiled_copy_s2t_SFP, thr_tCsSFP_s2t(_,_,_,_,0), thr_tCtSFP0_s2t);
+    // }
+#endif
     // gemm P1 * V1 -> O1
     gemm_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0);
 
     pipeline_corr.producer_commit(pipeline_corr_producer_state);
     ++pipeline_corr_producer_state;
 
-      if constexpr (get<1>(ThreadShape{}) > 1) {
+    if constexpr (get<1>(ThreadShape{}) > 1) {
       pipeline_kv.consumer_release(pipeline_kv_release_state);
       ++pipeline_kv_release_state;
     }
@@ -443,7 +565,12 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       k_index = (pipeline_kv_consumer_state.index());
       pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
       ++pipeline_kv_consumer_state;
-
+#ifdef MXFP8
+      // if (cute::elect_one_sync()) {
+      //   copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK_s2t);
+      // }
+#endif
+ 
       // gemm Q1 * Ki -> S1
       gemm_zero_acc(mma_qk, tSrQ0, tSrK(_,_,_,k_index), tStS0);
 
@@ -460,11 +587,21 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         v_index = pipeline_kv_consumer_state.index();
         pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
         ++pipeline_kv_consumer_state;
+#ifdef MXFP8
+        // if (cute::elect_one_sync()) {
+        //   copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV_s2t);
+        // }
+#endif
       }
 
       pipeline_corr.producer_acquire(pipeline_corr_producer_state);
       pipeline_s1.producer_acquire(pipeline_s1_producer_state);
 
+#ifdef MXFP8
+      // if (cute::elect_one_sync()) {
+      //   copy(tiled_copy_s2t_SFP, thr_tCsSFP_s2t(_,_,_,_,1), thr_tCtSFP1_s2t);
+      // }
+#endif
       gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1);
 
       pipeline_corr.producer_commit(pipeline_corr_producer_state);
@@ -478,6 +615,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         k_index = (pipeline_kv_consumer_state.index());
         pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
         ++pipeline_kv_consumer_state;
+#ifdef MXFP8
+        // if (cute::elect_one_sync()) {
+        //   copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK_s2t);
+        // }
+#endif
       }
 
       // gemm Q2 * Ki -> S2
@@ -494,12 +636,21 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       v_index = (pipeline_kv_consumer_state.index());
       pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
       ++pipeline_kv_consumer_state;
+#ifdef MXFP8
+      // if (cute::elect_one_sync()) {
+      //   copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV_s2t);
+      // }
+#endif
 
       // gemm P1 * Vi -> O1
       pipeline_corr.producer_acquire(pipeline_corr_producer_state);
 
       pipeline_s0.producer_acquire(pipeline_s0_producer_state);
-
+#ifdef MXFP8
+      // if (cute::elect_one_sync()) {
+      //   copy(tiled_copy_s2t_SFP, thr_tCsSFP_s2t(_,_,_,_,0), thr_tCtSFP0_s2t);
+      // }
+#endif
       gemm_reset_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0);
 
       pipeline_corr.producer_commit(pipeline_corr_producer_state);
@@ -526,12 +677,21 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       v_index = pipeline_kv_consumer_state.index();
       pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
       ++pipeline_kv_consumer_state;
+#ifdef MXFP8
+      // if (cute::elect_one_sync()) {
+      //   copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV_s2t);
+      // }
+#endif
     }
 
     // gemm P2 * Vi -> O2
     pipeline_corr.producer_acquire(pipeline_corr_producer_state);
     pipeline_s1.producer_acquire(pipeline_s1_producer_state);
-
+#ifdef MXFP8
+    // if (cute::elect_one_sync()) {
+    //   copy(tiled_copy_s2t_SFP, thr_tCsSFP_s2t(_,_,_,_,1), thr_tCtSFP1_s2t);
+    // }
+#endif
     gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1);
 
     pipeline_corr.producer_commit(pipeline_corr_producer_state);
@@ -560,7 +720,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       Params const& params, ProblemShape const& problem_shape,
       PipelineS& pipeline_s, typename PipelineS::PipelineState& pipeline_s_consumer_state,
       PipelineC& pipeline_c, typename PipelineC::PipelineState& pipeline_c_producer_state,
-      OrderBarrierSoftmax& order_s) {
+      OrderBarrierSoftmax& order_s, TensorStorage& storage) {
 
     Tensor tScS = typename CollectiveMmaQK::TiledMma{}.get_slice(0).partition_C(cS);
 
@@ -613,23 +773,27 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       Mask{}.apply_mask(tTMEM_LOADrS, tTMEM_LOADcS, problem_shape);
     }
 
+    static_assert(size(tTMEM_LOADrS) == 4 * kSFBlockSize);
     ElementQK old_row_max = row_max;
+
+    Tensor row_max_block = make_tensor<float>(make_shape(Int<4>{}));
     {
       // compute rowmax
-      float row_max_0 = row_max;
-      float row_max_1 = row_max;
-      float row_max_2 = row_max;
-      float row_max_3 = row_max;
       CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < size(tTMEM_LOADrS); i += 4) {
-        row_max_0  = ::fmax(row_max_0, tTMEM_LOADrS(i));
-        row_max_1 = ::fmax(row_max_1, tTMEM_LOADrS(i+1));
-        row_max_2 = ::fmax(row_max_2, tTMEM_LOADrS(i+2));
-        row_max_3 = ::fmax(row_max_3, tTMEM_LOADrS(i+3));
+      for (int i = 0; i < 4; i += 1) {
+        row_max_block(i) = -INFINITY;
       }
-      row_max = ::fmax(row_max_0, row_max_1);
-      row_max = ::fmax(row_max, row_max_2);
-      row_max = ::fmax(row_max, row_max_3);
+      CUTLASS_PRAGMA_UNROLL
+      for (int i = 0; i < int(size(tTMEM_LOADrS) / kSFBlockSize); i += 1) {
+        row_max_block(0) = ::fmax(row_max_block(0), tTMEM_LOADrS(i));
+        row_max_block(1) = ::fmax(row_max_block(1), tTMEM_LOADrS(i+32));
+        row_max_block(2) = ::fmax(row_max_block(2), tTMEM_LOADrS(i+64));
+        row_max_block(3) = ::fmax(row_max_block(3), tTMEM_LOADrS(i+96));
+      }
+      row_max = ::fmax(row_max, row_max_block(0));
+      row_max = ::fmax(row_max, row_max_block(1));
+      row_max = ::fmax(row_max, row_max_block(2));
+      row_max = ::fmax(row_max, row_max_block(3));
     }
 
     ElementQK row_max_safe = row_max == -INFINITY ? 0 : row_max;
@@ -650,6 +814,35 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     float2 scale_fp32x2 = make_float2(scale, scale);
     float2 minus_row_max_scale_fp32x2 = make_float2(-row_max_scale, -row_max_scale);
 
+#ifdef MXFP8
+    Array<float, 4> arr_SF_P_float;
+    // {
+    //   float2 row_max_x2 = make_float2(row_max, row_max);
+    //   Tensor row_max_block_x2 = recast<float2>(row_max_block);
+    //   float2 scale_mxfp8_log2_x2 = make_float2(params.scale_mxfp8_log2, params.scale_mxfp8_log2);
+    //   cute::sub(row_max_block_x2(0), row_max_x2, row_max_block_x2(0));
+    //   cute::sub(row_max_block_x2(1), row_max_x2, row_max_block_x2(1));
+    //   cute::fma(*(reinterpret_cast<float2*>(arr_SF_P_float.data())), row_max_block_x2(0), scale_fp32x2, scale_mxfp8_log2_x2);
+    //   cute::fma(*(reinterpret_cast<float2*>(arr_SF_P_float.data()) + 1), row_max_block_x2(1), scale_fp32x2, scale_mxfp8_log2_x2);
+
+    //   // TODO: optimize scale computation.
+    //   Array<uint8_t, 4> arr_SF_P;
+    //   NumericArrayConverter<uint8_t, float, 4ul, FloatRoundStyle::round_toward_zero> sf_f2i_convert;
+    //   arr_SF_P = sf_f2i_convert(arr_SF_P_float);
+    //   NumericArrayConverter<float, uint8_t, 4ul> sf_i2f_convert;
+    //   arr_SF_P_float = sf_i2f_convert(arr_SF_P);
+
+    //   // Copy SF to shared memory.
+    //   auto tCsSFP_compact = group_modes<0, 3>(recast<float>(make_tensor(
+    //     make_smem_ptr(storage.smem_sfp.begin()), 
+    //     filter_zeros(typename CollectiveMmaPV::SmemLayoutSFA{})
+    //   )));
+
+    //   // TODO: fix smem layout based on softmax stage.
+    //   tCsSFP_compact(thread_idx, stage) = *reinterpret_cast<float*>(arr_SF_P.data());
+    // }
+#endif
+
     Tensor tTMEM_STORErS_x4 = make_tensor<uint32_t>(shape(tTMEM_STOREcS));
 
     constexpr int kConversionsPerStep = 2;
@@ -662,38 +855,57 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     order_s.wait();
 
+#ifdef MXFP8
+    const int inner_n = kSFBlockSize;
+#else
+    const int inner_n = size(tTMEM_LOADrS);
+#endif
+    const int outer_n = size(tTMEM_LOADrS) / inner_n;
+
+    int i = 0;
+    int total_inner_n = inner_n;
     CUTLASS_PRAGMA_UNROLL
-    for (int i = 0; i < size(tTMEM_LOADrS); i += 2) {
-      float2 in = make_float2(
-        tTMEM_LOADrS(i + 0),
-        tTMEM_LOADrS(i + 1)
-      );
-      float2 out;
-      cute::fma(out, scale_fp32x2, in, minus_row_max_scale_fp32x2);
-      tTMEM_LOADrS(i + 0) = out.x;
-      tTMEM_LOADrS(i + 1) = out.y;
-
-      tTMEM_LOADrS(i+0) = ::exp2f(tTMEM_LOADrS(i+0));
-      tTMEM_LOADrS(i+1) = ::exp2f(tTMEM_LOADrS(i+1));
-
-      Array<ElementQK, kConversionsPerStep> in_conv;
+    for (int outer_i = 0; outer_i < outer_n; outer_i += 1) {
+#ifdef MXFP8
+      float2 modified_scale;
+      cute::sub(modified_scale, minus_row_max_scale_fp32x2, *(reinterpret_cast<float2*>(arr_SF_P_float.data()) + outer_i));
+#else
+      float2 modified_scale = minus_row_max_scale_fp32x2;
+#endif
       CUTLASS_PRAGMA_UNROLL
-      for (int j = 0; j < kConversionsPerStep; j++) {
-        in_conv[j] = tTMEM_LOADrS(i + j);
-      }
-      tTMEM_STORErS_x4_e[i / kConversionsPerStep] = convert(in_conv);
-
-
-      if (i == size(tTMEM_LOADrS) - kReleasePipeCount) {
-        order_s.arrive();
-      }
-
-      // this prevents register spills in fp16
-      if constexpr (size<2>(tTMEM_STORErS_x4) == _2{}) {
-        if (i == size(tTMEM_LOADrS) - 6) {
-          copy(tiled_tmem_store, tTMEM_STORErS_x4(_, _, 0), tTMEM_STOREtS_x4(_, _, 0));
+      for (; i < total_inner_n; i += 2) {
+        float2 in = make_float2(
+          tTMEM_LOADrS(i + 0),
+          tTMEM_LOADrS(i + 1)
+        );
+        float2 out;
+        cute::fma(out, scale_fp32x2, in, modified_scale);
+        tTMEM_LOADrS(i + 0) = out.x;
+        tTMEM_LOADrS(i + 1) = out.y;
+  
+        tTMEM_LOADrS(i+0) = ::exp2f(tTMEM_LOADrS(i+0));
+        tTMEM_LOADrS(i+1) = ::exp2f(tTMEM_LOADrS(i+1));
+  
+        Array<ElementQK, kConversionsPerStep> in_conv;
+        CUTLASS_PRAGMA_UNROLL
+        for (int j = 0; j < kConversionsPerStep; j++) {
+          in_conv[j] = tTMEM_LOADrS(i + j);
+        }
+        tTMEM_STORErS_x4_e[i / kConversionsPerStep] = convert(in_conv);
+  
+  
+        if (i == size(tTMEM_LOADrS) - kReleasePipeCount) {
+          order_s.arrive();
+        }
+  
+        // this prevents register spills in fp16
+        if constexpr (size<2>(tTMEM_STORErS_x4) == _2{}) {
+          if (i == size(tTMEM_LOADrS) - 6) {
+            copy(tiled_tmem_store, tTMEM_STORErS_x4(_, _, 0), tTMEM_STOREtS_x4(_, _, 0));
+          }
         }
       }
+      total_inner_n += inner_n;
     }
 
     // tmem_store(reg_S8) -> op_P
@@ -759,7 +971,8 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       Params const& params, ProblemShape const& problem_shape,
       PipelineS& pipeline_s, typename PipelineS::PipelineState& pipeline_s_consumer_state,
       PipelineC& pipeline_c, typename PipelineC::PipelineState& pipeline_c_producer_state,
-      OrderBarrierSoftmax& order_s) {
+      OrderBarrierSoftmax& order_s,
+      TensorStorage& storage) {
 
     int mask_tile_count = Mask{}.get_unmasked_trip_count(blk_coord, TileShape{}, problem_shape);
 
@@ -784,7 +997,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
           blk_coord, cS, params, problem_shape,
           pipeline_s, pipeline_s_consumer_state,
           pipeline_c, pipeline_c_producer_state,
-          order_s
+          order_s, storage
       );
 
       cS.data() = cS.data() + E<1>{} * get<1>(ThreadShape{}) * get<1>(TileShapeQK{});
@@ -800,7 +1013,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
           blk_coord, cS, params, problem_shape,
           pipeline_s, pipeline_s_consumer_state,
           pipeline_c, pipeline_c_producer_state,
-          order_s
+          order_s, storage
       );
 
       cS.data() = cS.data() + E<1>{} * get<1>(ThreadShape{}) * get<1>(TileShapeQK{});

@@ -44,6 +44,15 @@ add(C& c, A const& a, B const& b)
   c = a + b;
 }
 
+/// Generic sub
+template <class C, class A, class B>
+CUTE_HOST_DEVICE constexpr
+void
+sub(C& c, A const& a, B const& b)
+{
+  c = a - b;
+}
+
 /// Generic multiply
 template <class C, class A, class B>
 CUTE_HOST_DEVICE constexpr

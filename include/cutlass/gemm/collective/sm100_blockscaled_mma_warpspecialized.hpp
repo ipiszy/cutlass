@@ -667,6 +667,69 @@ struct CollectiveMma<
     tmem_storage.tCtSFA = tCtSFA;
     tmem_storage.tCtSFB = tCtSFB;
 
+    if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+      print("accumulators: \n");
+      print(tmem_storage.accumulators);
+      print("\n");
+      print("SmemLayoutAtomSFA: \n");
+      print(SmemLayoutAtomSFA{});
+      print("\n");
+      print("shape: \n");
+      print(shape(SmemLayoutAtomSFA{}));
+      print("\n");
+      print("size: \n");
+      print(size(SmemLayoutAtomSFA{}));
+      print("\n");
+      print("coshape: \n");
+      print(coshape(SmemLayoutAtomSFA{}));
+      print("\n");
+      print("cosize: \n");
+      print(cosize(SmemLayoutAtomSFA{}));
+      print("\n");
+      print("SmemLayoutSFA: \n");
+      print(SmemLayoutSFA{});
+      print("\n");
+      print("tCtSFA: \n");
+      print("in 8-bit: \n");
+      print(tmem_storage.tCtSFA);
+      print("\n");
+      print("shape: \n");
+      print(shape(tmem_storage.tCtSFA.layout()));
+      print("\n");
+      print("size: \n");
+      print(size(tmem_storage.tCtSFA.layout()));
+      print("\n");
+      print("coshape: \n");
+      print(coshape(tmem_storage.tCtSFA.layout()));
+      print("\n");
+      print("cosize: \n");
+      print(cosize(tmem_storage.tCtSFA.layout()));
+      print("\n");
+      print("in uint32_t: \n");
+      print(recast<uint32_t>(tmem_storage.tCtSFA));
+      print("\n");
+      print("shape: \n");
+      print(shape(recast<uint32_t>(tmem_storage.tCtSFA).layout()));
+      print("\n");
+      print("size: \n");
+      print(size(recast<uint32_t>(tmem_storage.tCtSFA).layout()));
+      print("\n");
+      print("coshape: \n");
+      print(coshape(recast<uint32_t>(tmem_storage.tCtSFA).layout()));
+      print("\n");
+      print("cosize: \n");
+      print(cosize(recast<uint32_t>(tmem_storage.tCtSFA).layout()));
+      print("\n");
+      print("tCtSFB: \n");
+      print(tmem_storage.tCtSFB);
+      print("\n");
+    } else {
+      unsigned long long start_clock = clock64();
+      while (clock64() - start_clock < 160000000) {
+          // Busy wait
+      }
+    }
+
     return tmem_storage;
   }
 
@@ -677,6 +740,7 @@ struct CollectiveMma<
     tmem_storage.accumulators.data() = tmem_base_addr;
     tmem_storage.tCtSFA.data() = tmem_storage.accumulators.data().get() + cutlass::detail::find_tmem_tensor_col_offset(tmem_storage.accumulators);
     tmem_storage.tCtSFB.data() = tmem_storage.tCtSFA.data().get() + cutlass::detail::find_tmem_tensor_col_offset(tmem_storage.tCtSFA);
+    CUTE_LOG("set_tmem_offsets: base_addr: %u, accum_size: %u, sfa_addr: %u, sfa_size: %u, sfa_cosize: %u, sfb_addr: %u, accumulator_stage_count: %d, stages: %d\n", tmem_base_addr, size(tmem_storage.accumulators)(), tmem_storage.tCtSFA.data().get(), size(recast<uint32_t>(tmem_storage.tCtSFA))(), cosize(recast<uint32_t>(tmem_storage.tCtSFA).layout())(), tmem_storage.tCtSFB.data().get(), AccumulatorPipelineStageCount, Stages);
   }
 
   /// Set up the data needed by this collective for load.
@@ -838,6 +902,29 @@ struct CollectiveMma<
       SM100_UTCCP_4x32dp128bit_2cta, SM100_UTCCP_4x32dp128bit_1cta>;
     auto tiled_copy_s2t_SFA = make_utccp_copy(UtccpOp{}, tCtSFA_compact);
     auto tiled_copy_s2t_SFB = make_utccp_copy(UtccpOp{}, tCtSFB_compact);
+
+    if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+      print("tCtSFA_compact: \n");
+      print(tCtSFA_compact);
+      print("\n");
+      print("shape:\n");
+      print(shape(tCtSFA_compact.layout()));
+      print("\n");
+      print("size: \n");
+      print(size(tCtSFA_compact.layout()));
+      print("\n");
+      print("coshape: \n");
+      print(coshape(tCtSFA_compact.layout()));
+      print("\n");
+      print("cosize: \n");
+      print(cosize(tCtSFA_compact.layout()));
+      print("\n");
+    } else {
+      unsigned long long start_clock = clock64();
+      while (clock64() - start_clock < 160000000) {
+          // Busy wait
+      }
+    }
 
     auto thr_copy_s2t_SFA = tiled_copy_s2t_SFA.get_slice(0);
     auto thr_tCsSFA_compact_s2t_ = thr_copy_s2t_SFA.partition_S(tCsSFA_compact);

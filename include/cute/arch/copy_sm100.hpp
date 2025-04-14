@@ -330,6 +330,7 @@ struct SM100_UTCCP_128dp256bit_1cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::1.128x256b [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -349,6 +350,7 @@ struct SM100_UTCCP_128dp256bit_2cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::2.128x256b [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -367,6 +369,7 @@ struct SM100_UTCCP_128dp128bit_1cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::1.128x128b [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -385,6 +388,7 @@ struct SM100_UTCCP_128dp128bit_2cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::2.128x128b [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -405,6 +409,7 @@ struct SM100_UTCCP_4dp256bit_1cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::1.4x256b [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -424,6 +429,7 @@ struct SM100_UTCCP_4dp256bit_2cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
         asm volatile ("tcgen05.cp.cta_group::2.4x256b [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -443,6 +449,7 @@ struct SM100_UTCCP_4x32dp128bit_1cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::1.32x128b.warpx4 [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -462,6 +469,7 @@ struct SM100_UTCCP_4x32dp128bit_2cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::2.32x128b.warpx4 [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -481,6 +489,7 @@ struct SM100_UTCCP_2x64dp128bitlw0213_1cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::1.64x128b.warpx2::02_13  [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -500,6 +509,7 @@ struct SM100_UTCCP_2x64dp128bitlw0213_2cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::2.64x128b.warpx2::02_13  [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -521,6 +531,7 @@ struct SM100_UTCCP_2x64dp128bitlw0123_1cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::1.64x128b.warpx2::01_23 [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));
@@ -542,6 +553,7 @@ struct SM100_UTCCP_2x64dp128bitlw0123_2cta
   copy(uint64_t const& src_addr, uint32_t const& dst_addr)
   {
 #if defined(CUTE_ARCH_TCGEN05_TMEM_ENABLED)
+    // CUTE_LOG("src_addr: %llu, dst_addr: %u\n", src_addr, dst_addr);
     asm volatile ("tcgen05.cp.cta_group::2.64x128b.warpx2::01_23 [%0], %1;"
     :
     : "r"(dst_addr)  "l"(src_addr));

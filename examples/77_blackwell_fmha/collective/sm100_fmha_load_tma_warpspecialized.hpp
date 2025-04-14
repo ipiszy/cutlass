@@ -61,10 +61,10 @@ template<
   class TileShape
 #ifdef MXFP8
   ,
-  class SFElement,
-  class StrideSFQ,
-  class StrideSFK,
-  class StrideSFV,
+  class ElementSF,
+  class LayoutSFQ,
+  class LayoutSFK,
+  class LayoutSFV,
   class SmemLayoutSFQ,
   class SmemLayoutSFK,
   class SmemLayoutSFV
@@ -74,8 +74,10 @@ struct Sm100FmhaLoadTmaWarpspecialized {
 
   using TileShapeQK = typename CollectiveMmaQK::TileShape;
   using TileShapePV = typename CollectiveMmaPV::TileShape;
-  using TileShapeSFQK = decltype(make_shape(get<0>(TileShapeQK{}), get<1>(TileShapeQK{}), get<2>(TileShapeQK{}) / kSFBlockSize));
-  using TileShapeSFPV = decltype(make_shape(get<0>(TileShapePV{}), get<1>(TileShapePV{}), get<2>(TileShapePV{}) / kSFBlockSize));
+#ifdef MXFP8
+  using TileShapeSF_QK = typename CollectiveMmaQK::TileShape_SF;
+  using TileShapeSF_PV = typename CollectiveMmaPV::TileShape_SF;
+#endif
 
   struct Arguments {
     const Element* ptr_Q;
@@ -86,12 +88,12 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     StrideV dV;
 
 #ifdef MXFP8
-    const SFElement* ptr_SFQ;
-    StrideSFQ dSFQ;
-    const SFElement* ptr_SFK;
-    StrideSFK dSFK;
-    const SFElement* ptr_SFV;
-    StrideSFV dSFV;
+    const ElementSF* ptr_SFQ;
+    LayoutSFQ layout_SFQ;
+    const ElementSF* ptr_SFK;
+    LayoutSFK layout_SFK;
+    const ElementSF* ptr_SFV;
+    LayoutSFV layout_SFV;
 #endif
   };
 
@@ -114,6 +116,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     TMA_SFQ tma_load_sfq;
     TMA_SFK tma_load_sfk;
     TMA_SFV tma_load_sfv;
+    LayoutSFQ layout_SFQ;
+    LayoutSFK layout_SFK;
+    LayoutSFV layout_SFV;
 #endif
   };
 
@@ -135,9 +140,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     auto ptr_SFQ = args.ptr_SFQ;
     auto ptr_SFK = args.ptr_SFK;
     auto ptr_SFV = args.ptr_SFV;
-    auto dSFQ = args.dSFQ;
-    auto dSFK = args.dSFK;
-    auto dSFV = args.dSFV;
+    auto layout_SFQ = args.layout_SFQ;
+    auto layout_SFK = args.layout_SFK;
+    auto layout_SFV = args.layout_SFV;
 #endif
 
     if constexpr (is_variable_length_v<tuple_element_t<0, ProblemShape>>) {
@@ -173,8 +178,8 @@ struct Sm100FmhaLoadTmaWarpspecialized {
             ptr_K, dK
 #ifdef MXFP8
             ,
-            ptr_SFQ, make_layout(make_shape(get<0>(TileShapeSFQK{}), get<2>(TileShapeSFQK{})), dSFQ),
-            ptr_SFK, make_layout(make_shape(get<1>(TileShapeSFQK{}), get<2>(TileShapeSFQK{})), dSFK)
+            ptr_SFQ, layout_SFQ,
+            ptr_SFK, layout_SFK
 #endif
         }, /*workspace=*/ nullptr);
 
@@ -183,11 +188,11 @@ struct Sm100FmhaLoadTmaWarpspecialized {
         problem_shape_pv,
         typename CollectiveMmaPV::Arguments {
             ptr_K, dK,  // never used, dummy
-            ptr_V, select<1,0,2>(dV),
+            ptr_V, select<1,0,2>(dV)
 #ifdef MXFP8
             ,
-            ptr_SFQ, make_layout(make_shape(get<0>(TileShapeSFQK{}), get<2>(TileShapeSFQK{})), dSFQ),  // dummy
-            ptr_SFV, make_layout(make_shape(get<2>(TileShapeSFPV{}), get<1>(TileShapeSFPV{})), dSFV)
+            ptr_SFQ, layout_SFQ,
+            ptr_SFK, layout_SFK
 #endif
         }, /*workspace=*/ nullptr);
 
@@ -199,7 +204,10 @@ struct Sm100FmhaLoadTmaWarpspecialized {
         ,
         params_qk.tma_load_sfa,
         params_qk.tma_load_sfb,
-        params_pv.tma_load_sfb
+        params_pv.tma_load_sfb,
+        layout_SFQ,
+        layout_SFK,
+        layout_SFV
 #endif
     };
   }
@@ -269,12 +277,11 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     Tensor tQgQ = tQgQ_qdl(_, _, _0{}, get<2>(blk_coord_q));
 
 #ifdef MXFP8
-    Tensor mSFQ_qdl_p = params.tma_load_sfq.get_tma_tensor(
-        make_shape(get<0>(problem_size), get<2>(problem_size) / kSFBlockSize, get<3>(problem_size)));
+    Tensor mSFQ_qdl_p = params.tma_load_sfq.get_tma_tensor(params.layout_SFQ.shape());
     Tensor mSFQ_qdl = domain_offset(make_coord(q_offs_0, _0{}, make_coord(_0{}, q_offs_2_1)), mSFQ_qdl_p);
-    Tensor gSFQ_qdl = local_tile(mSFQ_qdl, TileShapeSFQK{}, make_coord(_, _, _), Step<_1, X, _1>{});
+    Tensor gSFQ_qdl = local_tile(mSFQ_qdl, TileShapeSF_QK{}, make_coord(_, _, _), Step<_1, X, _1>{});
     Tensor tSgSFQ_qdl = mma_qk.partition_A(gSFQ_qdl);
-    Tensor sSFQ = make_tensor(make_smem_ptr(storage.smem_sfq.data()), SmemLayoutQ{});
+    Tensor sSFQ = make_tensor(make_smem_ptr(storage.smem_sfq.data()), SmemLayoutSFQ{});
 
     auto [tSFQgQ_qdl, tSFQsQ] = tma_partition(
       params.tma_load_sfq, _0{}, make_layout(_1{}),
@@ -311,8 +318,7 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     Tensor tKgK = tKgK_kdl(_, _, _0{}, get<2>(blk_coord_kv));
 
 #ifdef MXFP8
-    Tensor mSFK_kdl_p = params.tma_load_sfk.get_tma_tensor(
-        make_shape(get<1>(problem_size), get<2>(problem_size) / kSFBlockSize, get<3>(problem_size)));
+    Tensor mSFK_kdl_p = params.tma_load_sfk.get_tma_tensor(params.layout_SFK.shape());
 
     // if constexpr (is_variable_length_v<tuple_element_t<1, ParamsProblemShape>>) {
     //   auto cumulative_length = get<1>(params_problem_shape).cumulative_length;
@@ -326,7 +332,7 @@ struct Sm100FmhaLoadTmaWarpspecialized {
 
     Tensor mSFK_kdl = domain_offset(make_coord(kv_offs_0, _0{}, make_coord(_0{}, kv_offs_2_1)), mSFK_kdl_p);
 
-    Tensor gSFK_kdl = local_tile(mSFK_kdl, TileShapeSFQK{}, make_coord(_, _, _), Step<X, _1, _1>{});
+    Tensor gSFK_kdl = local_tile(mSFK_kdl, TileShapeSF_QK{}, make_coord(_, _, _), Step<X, _1, _1>{});
     Tensor tSgSFK_kdl = mma_qk.partition_B(gSFK_kdl);
     Tensor sSFK = make_tensor(make_smem_ptr(storage.smem_sfk.data()), SmemLayoutSFK{});
     auto [tSFKgK_kdl, tSFKsK] = tma_partition(
@@ -352,11 +358,11 @@ struct Sm100FmhaLoadTmaWarpspecialized {
     auto tVgV = tVgV_dkl(_, _0{}, _, get<2>(blk_coord_kv));
 
 #ifdef MXFP8
-    Tensor mSFV_dkl_p = params.tma_load_sfv.get_tma_tensor(select<2,1,3>(problem_shape));
+    Tensor mSFV_dkl_p = params.tma_load_sfv.get_tma_tensor(params.layout_SFV.shape());
 
     Tensor mSFV_dkl = domain_offset(make_coord(_0{}, kv_offs_0, make_coord(_0{}, kv_offs_2_1)), mSFV_dkl_p);
 
-    Tensor gSFV_dkl = local_tile(mSFV_dkl, TileShapeSFPV{}, make_coord(_, _, _), Step<X, _1, _1>{});
+    Tensor gSFV_dkl = local_tile(mSFV_dkl, TileShapeSF_PV{}, make_coord(_, _, _), Step<X, _1, _1>{});
     Tensor tOgSFV_dkl = mma_pv.partition_B(gSFV_dkl);
     Tensor sSFV = make_tensor(make_smem_ptr(storage.smem_sfv.data()), SmemLayoutSFV{});
     auto [tSFVgV_dkl, tSFVsV] = tma_partition(

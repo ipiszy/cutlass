@@ -225,7 +225,7 @@ public:
     MainloopParams mainloop{};
     EpilogueParams epilogue{};
     TileSchedulerParams scheduler{};
-    KernelHardwareInfo hw_info{}; 
+    KernelHardwareInfo hw_info{};
   };
 
   enum class WarpCategory : int32_t {
@@ -312,7 +312,7 @@ public:
       implementable &= size(args.hw_info.cluster_shape_fallback) <= MaxClusterSize;
       implementable &= cutlass::detail::preferred_cluster_can_implement<AtomThrShapeMNK>(args.hw_info.cluster_shape, args.hw_info.cluster_shape_fallback);
     }
-    
+
     constexpr bool IsBlockscaled = !cute::is_void_v<ElementSF>;
     if constexpr (IsBlockscaled) {
       if constexpr (IsDynamicCluster) {
@@ -692,6 +692,7 @@ public:
     else if (is_participant.mma) {
       // Tmem allocation sequence
       tmem_allocator.allocate(TmemAllocator::Sm100TmemCapacityColumns, &shared_storage.tmem_base_ptr);
+      CUTE_LOG("tmem_base_ptr: %d\n", shared_storage.tmem_base_ptr);
       __syncwarp();
       tmem_allocation_result_barrier.arrive();
       uint32_t tmem_base_ptr = shared_storage.tmem_base_ptr;

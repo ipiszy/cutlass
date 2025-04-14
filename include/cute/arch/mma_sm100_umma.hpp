@@ -1020,6 +1020,7 @@ struct SM100_MMA_MXF8F6F4_SS
   {
 #if defined(CUTE_ARCH_TCGEN05_MXF8F6F4_MMA_ENABLED)
     if (cute::elect_one_sync()) {
+      // CUTE_LOG("tmem_c: %u, tsfa_addr: %u, tsfb_addr: %u\n", tmem_c, tsfa_addr, tsfb_addr);
       asm volatile(
         "{\n\t"
         ".reg .pred p;\n\t"
@@ -1061,6 +1062,7 @@ struct SM100_MMA_MXF8F6F4_TS
   {
 #if defined(CUTE_ARCH_TCGEN05_MXF8F6F4_MMA_ENABLED)
     if (cute::elect_one_sync()) {
+      // CUTE_LOG("tmem_c: %u, tsfa_addr: %u, tsfb_addr: %u\n", tmem_c, tsfa_addr, tsfb_addr);
       asm volatile(
         "{\n\t"
         ".reg .pred p;\n\t"

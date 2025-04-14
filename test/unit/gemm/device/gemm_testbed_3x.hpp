@@ -1102,6 +1102,21 @@ struct HostCollectiveMainloop<cutlass::gemm::KernelTmaWarpSpecializedBlockScaled
     tensor_SFA.resize(sfa_coord, cutlass::layout::Affine2Layout_Factory<LayoutTagA>::layout_factory(sfa_coord, stride_factor_A));
     tensor_SFB.resize(sfb_coord, cutlass::layout::Affine2Layout_Factory<LayoutTagB>::layout_factory(sfb_coord, stride_factor_B));
 
+    print("problem_shape_MNKL\n");
+    print("M: "); print(M); print("\n");
+    print("N: "); print(N); print("\n");
+    print("K: "); print(K); print("\n");
+    print("L: "); print(L); print("\n");
+    print("\n");
+    print("layout_sfa\n");
+    print(layout_sfa);
+    print("\n");
+    print("sfa_coord\n");
+    printf("%d, %d\n", sfa_coord[0], sfa_coord[1]);
+    // print("tensor_SFA\n");
+    // print(tensor_SFA);
+    // print("\n");
+
     EXPECT_TRUE(initialize_tensor(tensor_SFA.host_view(), init_A, seed + 2024));
     EXPECT_TRUE(initialize_tensor(tensor_SFB.host_view(), init_B, seed + 2025));
 

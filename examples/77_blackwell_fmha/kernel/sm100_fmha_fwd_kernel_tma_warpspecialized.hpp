@@ -387,7 +387,8 @@ struct Sm100FmhaFwdKernelTmaWarpspecialized {
            is_softmax_0 ? pipeline_mma_s0_consumer_state : pipeline_mma_s1_consumer_state,
            is_softmax_0 ? pipeline_s0_corr : pipeline_s1_corr,
            is_softmax_0 ? pipeline_s0_corr_producer_state : pipeline_s1_corr_producer_state,
-           order_s01
+           order_s01,
+           shared_storage.mainloop
          );
 
        }
@@ -453,7 +454,8 @@ struct Sm100FmhaFwdKernelTmaWarpspecialized {
           pipeline_load_kv, pipeline_load_kv_consumer_state,
           pipeline_mma_s0, pipeline_mma_s0_producer_state,
           pipeline_mma_s1, pipeline_mma_s1_producer_state,
-          pipeline_mma_corr, pipeline_mma_corr_producer_state
+          pipeline_mma_corr, pipeline_mma_corr_producer_state,
+          shared_storage.tmem_base_ptr
         );
 
 
