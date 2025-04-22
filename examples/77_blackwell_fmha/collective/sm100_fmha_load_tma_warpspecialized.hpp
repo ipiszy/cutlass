@@ -180,6 +180,9 @@ struct Sm100FmhaLoadTmaWarpspecialized {
             ,
             ptr_SFQ, layout_SFQ,
             ptr_SFK, layout_SFK
+            // ,
+            // nullptr, LayoutSFQ{},
+            // nullptr, LayoutSFK{},
 #endif
         }, /*workspace=*/ nullptr);
 
@@ -191,8 +194,10 @@ struct Sm100FmhaLoadTmaWarpspecialized {
             ptr_V, select<1,0,2>(dV)
 #ifdef MXFP8
             ,
-            ptr_SFQ, layout_SFQ,
-            ptr_SFK, layout_SFK
+            ptr_SFQ, layout_SFQ,  // dummy
+            ptr_SFV, layout_SFV
+            // nullptr, LayoutSFQ{},
+            // nullptr, LayoutSFV{},
 #endif
         }, /*workspace=*/ nullptr);
 

@@ -83,7 +83,11 @@ if(NOT WIN32 AND (NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang")) AND (CUTLASS_NVCC
         )
     target_include_directories(77_blackwell_fmha_gen_${PREC} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_definitions(77_blackwell_fmha_gen_${PREC} PRIVATE ${PREC_MACRO})
+  endforeach()
 
+
+  foreach(PREC fp8 fp16)
+    string(TOUPPER "${PREC}" PREC_MACRO)
     cutlass_example_add_executable(
         77_blackwell_mla_2sm_${PREC}
         77_blackwell_mla.cu
