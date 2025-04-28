@@ -439,7 +439,18 @@ struct FwdRunner {
       select<0,3>(problem_shape),
       stride_LSE);
 
-    fmha_reference(problem_shape, mQ, mK, mV, mO, mLSE, ActiveMask{});
+#ifdef MXFP8
+    Tensor mSFQ = make_tensor(make_gmem_ptr(block_SFQ.get()), layout_SFQ);
+    Tensor mSFK = make_tensor(make_gmem_ptr(block_SFK.get()), layout_SFK);
+    Tensor mSFV = make_tensor(make_gmem_ptr(block_SFV.get()), layout_SFV);
+#endif
+
+    fmha_reference(
+      problem_shape, mQ, mK, mV, mO, mLSE, ActiveMask{}
+#ifdef MXFP8
+      , mSFQ, mSFK, mSFV
+#endif
+    );
 
     cudaError_t result = cudaDeviceSynchronize();
     if (result != cudaSuccess) {
@@ -559,15 +570,10 @@ struct FwdRunner {
     auto shape_QO = select<0,2,3>(problem_size);
     auto shape_KV = select<1,2,3>(problem_size);
     auto shape_LSE = select<0,3>(problem_size);
-    auto shape_SFQ = make_shape(get<0>(problem_size), get<2>(problem_size) / kSFBlockSize, get<3>(problem_size));
-    auto shape_SFK = make_shape(get<1>(problem_size), get<2>(problem_size) / kSFBlockSize, get<3>(problem_size));
-    auto shape_SFV = make_shape(get<1>(problem_size) / kSFBlockSize, get<2>(problem_size), get<3>(problem_size));
 
     int SQ = size<0>(problem_size);
     int SK = size<1>(problem_size);
     int D = size<2>(problem_size);
-    int SF_D = D / kSFBlockSize;
-    int SF_V = SK / kSFBlockSize;
     int H  = size<3,0>(problem_size);
     int H_K = size<3,0,1>(problem_size);
     int H_Q = size<3,0,0>(problem_size);
@@ -591,9 +597,6 @@ struct FwdRunner {
     block_K.reset(size(shape_KV), kIsVarlen ? D*SK*H_K : 0);
     block_V.reset(size(shape_KV), kIsVarlen ? D*SK*H_K : 0);
     block_O.reset(size(shape_QO), kIsVarlen ? D*SQ*H : 0);
-    block_SFQ.reset(size(shape_SFQ), kIsVarlen ? SF_D * SQ * H : 0);
-    block_SFK.reset(size(shape_SFK), kIsVarlen ? SF_D * SK * H : 0);
-    block_SFV.reset(size(shape_SFV), kIsVarlen ? D * SF_V * H : 0);
     block_LSE.reset(size(shape_LSE));
     block_ref_O.reset(size(shape_QO));
     block_ref_LSE.reset(size(shape_LSE));
@@ -601,10 +604,22 @@ struct FwdRunner {
     initialize_block(block_Q, seed + 2023, options.init_style_q);
     initialize_block(block_K, seed + 2022, options.init_style_k);
     initialize_block(block_V, seed + 2021, options.init_style_v);
+
 #ifdef MXFP8
-    initialize_block(block_SFQ, seed + 2020, InitStyle::kRandom);
-    initialize_block(block_SFK, seed + 2019, InitStyle::kRandom);
-    initialize_block(block_SFV, seed + 2018, InitStyle::kRandom);
+    int SF_D = D / kSFBlockSize;
+    int SF_V = SK / kSFBlockSize;
+    layout_SFQ = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(problem_size);
+    layout_SFK = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(problem_size);
+    layout_SFV = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(select<0,2,1,3>(problem_size));
+    block_SFQ.reset(size(layout_SFQ), kIsVarlen ? SF_D * SQ * H : 0);
+    block_SFK.reset(size(layout_SFK), kIsVarlen ? SF_D * SK * H : 0);
+    block_SFV.reset(size(layout_SFV), kIsVarlen ? D * SF_V * H : 0);
+    // initialize_block(block_SFQ, seed + 2020, InitStyle::kRandom);
+    // initialize_block(block_SFK, seed + 2019, InitStyle::kRandom);
+    // initialize_block(block_SFV, seed + 2018, InitStyle::kRandom);
+    initialize_block(block_SFQ, seed + 2020, InitStyle::kOne);
+    initialize_block(block_SFK, seed + 2019, InitStyle::kOne);
+    initialize_block(block_SFV, seed + 2018, InitStyle::kOne);
 #endif
 
     if ( ! cumulative_seqlen_q.empty()) {
@@ -630,11 +645,6 @@ struct FwdRunner {
 
     ProblemShapeType problem_shape = initialize(options);
 
-#ifdef MXFP8
-    layout_SFQ = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(problem_shape);
-    layout_SFK = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(problem_shape);
-    layout_SFV = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(select<0,2,1,3>(problem_shape));
-#endif
     typename Operation::Arguments arguments{
       problem_shape,
       { block_Q.get(), stride_Q,

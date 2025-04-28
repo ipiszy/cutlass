@@ -35,6 +35,10 @@
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
+namespace {
+  const int kSFBlockSize_ = 32;
+}  // namespace
+
 template<
   class ProblemShapeIn,
   class TensorQ,
@@ -43,18 +47,28 @@ template<
   class TensorO,
   class TensorLSE,
   class Mask
+#ifdef MXFP8
+  , class TensorSFQ, class TensorSFK, class TensorSFV
+#endif
 >
 void __global__ fmha_reference_kernel(
     ProblemShapeIn problem_shape_in,
     TensorQ mQ, TensorK mK, TensorV mV,
     TensorO mO, TensorLSE mLSE,
-    Mask mask) {
+    Mask mask
+#ifdef MXFP8
+    , TensorSFQ mQ_sf, TensorSFK mK_sf, TensorSFV mV_sf
+#endif
+  ) {
 
   using namespace cute;
   using namespace cutlass::fmha::collective;
 
   using Element = typename TensorO::value_type;
   using ElementAccumulator = typename TensorLSE::value_type;
+#ifdef MXFP8
+  using ElementSF = typename TensorSFQ::value_type;
+#endif
 
   extern __shared__ char mS_mem[];
   ElementAccumulator* mS = reinterpret_cast<ElementAccumulator*>(mS_mem);
@@ -86,7 +100,17 @@ void __global__ fmha_reference_kernel(
         for (int idx_D = 0; idx_D < size<2>(problem_shape); idx_D++) {
           ElementAccumulator eQ = mQ(idx_Q + offset_Q, idx_D, idx_L);
           ElementAccumulator eK = mK(idx_K + offset_K, idx_D, idx_L);
-          acc += eQ * eK;
+          ElementAccumulator eQK = eQ * eK;
+#ifdef MXFP8
+          ElementSF eQ_sf = mQ_sf(idx_Q + offset_Q, idx_D / kSFBlockSize_, idx_L);
+          ElementSF eK_sf = mK_sf(idx_K + offset_K, idx_D / kSFBlockSize_, idx_L);
+          CUTE_LOG("idx_Q: %d, idx_K: %d: eQ_sf: %x, eK_sf: %x\n", 
+            idx_Q, idx_K, 
+            *(reinterpret_cast<uint8_t*>(&eQ_sf)), *(reinterpret_cast<uint8_t*>(&eK_sf))
+          );
+          eQK *= eQ_sf * eK_sf;
+#endif
+          acc += eQK;
         }
         auto frag = make_tensor<ElementAccumulator>(Shape<_1, _1>{});
         frag(0) = acc;
@@ -122,7 +146,12 @@ void __global__ fmha_reference_kernel(
         for (int idx_K = 0; idx_K < size<1>(problem_shape); idx_K++) {
           ElementAccumulator eV = mV(idx_K + offset_K, idx_D, idx_L);
           ElementAccumulator eK = static_cast<Element>(mS[idx_K]);
-          acc += eK * eV;
+          ElementAccumulator eSV = eK * eV;
+#ifdef MXFP8
+          ElementSF eV_sf = mV_sf(idx_D, (idx_K + offset_K) / kSFBlockSize_, idx_L);
+          eSV *= eV_sf;
+#endif
+          acc += eSV;
         }
         mO(idx_Q + offset_Q, idx_D, idx_L) = static_cast<typename TensorO::value_type>(acc * scale);
       }
@@ -145,19 +174,31 @@ template<
   class TensorO,
   class TensorLSE,
   class Mask
+#ifdef MXFP8
+  , class TensorSFQ, class TensorSFK, class TensorSFV
+#endif
 >
 void fmha_reference(
     ProblemShapeIn problem_shape_in,
     TensorQ mQ, TensorK mK, TensorV mV,
     TensorO mO, TensorLSE mLSE,
-    Mask mask) {
+    Mask mask
+#ifdef MXFP8
+    , TensorSFQ mQ_sf, TensorSFK mK_sf, TensorSFV mV_sf
+#endif
+  ) {
 
   using namespace cute;
 
   dim3 grid(size<0>(mO), size<2>(mO), 1);
   dim3 block(256);
   int shared_mem = size<0>(mK) * int(sizeof(typename TensorLSE::value_type));
-  fmha_reference_kernel<<<grid, block, shared_mem>>>(problem_shape_in, mQ, mK, mV, mO, mLSE, mask);
+  fmha_reference_kernel<<<grid, block, shared_mem>>>(
+    problem_shape_in, mQ, mK, mV, mO, mLSE, mask
+#ifdef MXFP8
+    , mQ_sf, mK_sf, mV_sf
+#endif
+  );
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

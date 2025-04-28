@@ -2863,7 +2863,7 @@ struct MMA_Traits<SM100_MMA_MXF8F6F4_TS<a_type, b_type, c_type, sf_type,
   // Construct an executable MMA_traits with sp into set.
   template <class TSFA, class TSFALayout, class TSFB, class TSFBLayout>
   CUTE_HOST_DEVICE constexpr
-  MMA_Traits<SM100_MMA_MXF8F6F4_SS<a_type, b_type, c_type, sf_type,
+  MMA_Traits<SM100_MMA_MXF8F6F4_TS<a_type, b_type, c_type, sf_type,
                               M, N, a_major, b_major, a_neg, b_neg>>
   with(UMMA::ScaleOut accumulate, Tensor<TSFA, TSFALayout> const& SFA, Tensor<TSFB, TSFBLayout> const& SFB) const {
     uint32_t tmem_sfa_addr = raw_pointer_cast(SFA.data());

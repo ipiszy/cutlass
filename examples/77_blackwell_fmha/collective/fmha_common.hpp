@@ -52,10 +52,32 @@ CUTE_DEVICE void gemm_reset_zero_acc(Atom& atom, TA const& tA, TB const& tB, TC&
   }
 }
 
+template<typename Atom, typename TA, typename TB, typename TC, typename SFA, typename SFB>
+CUTE_DEVICE void gemm_reset_zero_acc(Atom& atom, TA const& tA, TB const& tB, TC&& tC, SFA const& tSFA, SFB const& tSFB) {
+  constexpr int rA = decltype(rank(tA))::value;
+  constexpr int rB = decltype(rank(tB))::value;
+  constexpr int rC = decltype(rank(tC))::value;
+  static_assert(rA == 3 && rB == 3 && rC == 3);
+
+  CUTLASS_PRAGMA_UNROLL
+  for (int k_block = 0; k_block < size<2>(tA); k_block++) {
+    cute::gemm(
+      atom.with(atom.accumulate_, tSFA(_,_,k_block), tSFB(_,_,k_block)), 
+      tA(_,_,k_block), tB(_,_,k_block), tC);
+    atom.accumulate_ = decltype(atom.accumulate_)::One;
+  }
+}
+
 template<typename Atom, typename TA, typename TB, typename TC>
 CUTE_DEVICE void gemm_zero_acc(Atom& atom, TA const& tA, TB const& tB, TC&& tC) {
   atom.accumulate_ = decltype(atom.accumulate_)::Zero;
   gemm_reset_zero_acc(atom, tA, tB, tC);
+}
+
+template<typename Atom, typename TA, typename TB, typename TC, typename SFA, typename SFB>
+CUTE_DEVICE void gemm_zero_acc(Atom& atom, TA const& tA, TB const& tB, TC&& tC, SFA const& tSFA, SFB const& tSFB) {
+  atom.accumulate_ = decltype(atom.accumulate_)::Zero;
+  gemm_reset_zero_acc(atom, tA, tB, tC, tSFA, tSFB);
 }
 
 template<class Layout, class Stages = _1>
