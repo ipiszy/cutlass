@@ -850,7 +850,7 @@ void run_fwd_128(Mask fusion, Options const & options, cutlass::KernelHardwareIn
   // Persistent Tile Scheduler
   run(Shape<_256, _128, HeadDim>{}, "tma ws 256x128 acc fp32 persistent", Option<Tag::kIsPersistent, true_type>{});
   // Individual Tile Scheduler
-  run(Shape<_256, _128, HeadDim>{}, "tma ws 256x128 acc fp32 individual", Option<Tag::kIsPersistent, false_type>{});
+  // run(Shape<_256, _128, HeadDim>{}, "tma ws 256x128 acc fp32 individual", Option<Tag::kIsPersistent, false_type>{});
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////

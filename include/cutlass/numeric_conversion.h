@@ -198,7 +198,7 @@ struct NumericConverter<int8_t, float, FloatRoundStyle::round_toward_zero> {
     // High-end saturation
     intermediate = std::min(intermediate, (int32_t)std::numeric_limits<int8_t>::max());
     return static_cast<result_type>(intermediate);
-    #endif 
+    #endif
   }
 
   CUTLASS_HOST_DEVICE
@@ -359,12 +359,12 @@ public:
     return NumericConverter<result_type, middle_type, Round>::convert(middle);
   }
 
-  CUTLASS_HOST_DEVICE result_type  
+  CUTLASS_HOST_DEVICE result_type
   operator()(source_type const& s) const {
     return convert(s);
   }
 };
-  
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Partial specialization for float <= cutlass::half_t
@@ -935,7 +935,7 @@ struct NumericArrayConverter<cutlass::half_t, float, 2, FloatRoundStyle::round_t
     #else
       NumericConverter<cutlass::half_t, float, round_style> convert_;
       // NOTE: cutlass::Array<half, N> is NOT an aggregate type and
-      //  below `{}` does NOT conduct zero initialization. Below `{}` will 
+      //  below `{}` does NOT conduct zero initialization. Below `{}` will
       //  conduct default initialization (calling default ctr). We use this syntax
       //  to resolve compiler warning on uninitialized member variable.
       Array<cutlass::half_t, 2> result{};
@@ -2252,6 +2252,7 @@ struct NumericArrayConverterPacked4Element<float, float_ue8m0_t, Round> {
   using source_type = Array<source_element, 4>;
   using BfloatArr = Array<cutlass::bfloat16_t, 4>;
   static FloatRoundStyle const round_style = Round;
+
 
   CUTLASS_DEVICE
   static result_type convert(source_type const & source) {
@@ -3810,7 +3811,7 @@ struct NumericArrayConverter<float_e2m1_t, float, 2, Round> {
       "mov.b32 %0, {byte0, byte1, byte2, byte3};\n" \
       "}" \
       : "=r"(tmp) : "f"(source[0]), "f"(source[1]));
-    
+
     uint8_t out = (tmp & 0xff);
 
     return reinterpret_cast<result_type const &>(out);
@@ -4765,11 +4766,11 @@ struct NumericArrayConverter<int8_t, int4b_t, N, Round> {
 
   CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
-   
+
     #if defined(__CUDA_ARCH__)
 
     if constexpr ( N == 8 ) {
-      
+
       unsigned const& storage = reinterpret_cast<unsigned const &>(source);
       unsigned out[2];
 
@@ -4794,36 +4795,36 @@ struct NumericArrayConverter<int8_t, int4b_t, N, Round> {
           : "r"(storage));
 
       return reinterpret_cast<result_type const &>(out);
-      
+
     } else {
-      
+
       NumericArrayConverter<int8_t, int4b_t, 8, Round> convert_vector_;
-      
+
       result_type result;
-      
+
       Array<int8_t, 8> *result_ptr = reinterpret_cast<Array<int8_t, 8> *>(&result);
       Array<int4b_t, 8> const *source_ptr = reinterpret_cast<Array<int4b_t, 8> const *>(&source);
-      
+
       CUTLASS_PRAGMA_UNROLL
       for (int i = 0; i < N / 8; ++i) {
         result_ptr[i] = convert_vector_(source_ptr[i]);
       }
-      
+
       return result;
     }
-    
+
     #else
-    
+
     result_type result;
     NumericConverter<int8_t, int4b_t, Round> convert_;
-    
+
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < N; ++i) {
       result[i] = convert_(source[i]);
     }
-    
+
     return result;
-    
+
     #endif // __CUDA_ARCH__
   }
 
@@ -5964,7 +5965,7 @@ private:
 
       static constexpr uint32_t hfma_bias  = 0xD400E400; // {-64, -1024}
       static constexpr uint32_t hfma_scale = 0x2C003C00; // {1 / 16, 1}
-      
+
       {
         __half2& fp16x2_val = reinterpret_cast<__half2&>(r[ii]);
         fp16x2_val = __hfma2(fp16x2_val, reinterpret_cast<const __half2&>(hfma_scale), reinterpret_cast<const __half2&>(hfma_bias));
@@ -6246,7 +6247,7 @@ private:
     uint32_t src_reg_shifted_four = src_reg >> 4;
     uint32_t src_reg_shifted_six = src_reg >> 6;
 
-    // Modified prmt indices for signed 2-bit values 
+    // Modified prmt indices for signed 2-bit values
     uint32_t const prmt_indices[4] = {0xF4F0, 0xF5F1, 0xF6F2, 0xF7F3};
 
     static_assert(RegArray::kElements <= 8, "Too many inputs for I2 -> BF16 vector converter");
@@ -6380,7 +6381,7 @@ private:
     uint32_t src_reg_shifted_four = src_reg >> 4;
     uint32_t src_reg_shifted_six = src_reg >> 6;
 
-    // Modified prmt indices for signed 2-bit values 
+    // Modified prmt indices for signed 2-bit values
     uint32_t const prmt_indices[4] = {0xF4F0, 0xF5F1, 0xF6F2, 0xF7F3};
 
     static_assert(RegArray::kElements <= 8, "Too many inputs for U2 -> BF16 vector converter");

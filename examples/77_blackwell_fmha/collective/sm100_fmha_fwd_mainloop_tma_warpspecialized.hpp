@@ -275,7 +275,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     float log2_e = static_cast<float>(std::log2(std::exp(1.0)));
 #ifdef MXFP8
     // TODO: revisit whether rounding is correct.
-    float scale_mxfp8_log2 = static_cast<float>(std::log2(1.75f - 448.0f));
+    float scale_mxfp8_log2 = (
+      static_cast<float>(std::log2(1.75f)) - 
+      static_cast<float>(std::log2(448.0f)) +
+      cutlass::float_ue8m0_t::BitRepresentation::EXP_BIAS
+    );
 #endif
 
     return Params{
@@ -838,19 +842,27 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         row_max_block(i) = -INFINITY;
       }
       CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < int(size(tTMEM_LOADrS) / kSFBlockSize); i += 1) {
-        row_max_block(0) = ::fmax(row_max_block(0), tTMEM_LOADrS(i));
-        row_max_block(1) = ::fmax(row_max_block(1), tTMEM_LOADrS(i+32));
-        row_max_block(2) = ::fmax(row_max_block(2), tTMEM_LOADrS(i+64));
-        row_max_block(3) = ::fmax(row_max_block(3), tTMEM_LOADrS(i+96));
+      for (int i = 0; i < kSFBlockSize; i += 1) {
+        row_max_block(0) = ::fmax(row_max_block(0), tTMEM_LOADrS(i + kSFBlockSize * 0));
+        row_max_block(1) = ::fmax(row_max_block(1), tTMEM_LOADrS(i + kSFBlockSize * 1));
+        row_max_block(2) = ::fmax(row_max_block(2), tTMEM_LOADrS(i + kSFBlockSize * 2));
+        row_max_block(3) = ::fmax(row_max_block(3), tTMEM_LOADrS(i + kSFBlockSize * 3));
       }
       row_max = ::fmax(row_max, row_max_block(0));
       row_max = ::fmax(row_max, row_max_block(1));
       row_max = ::fmax(row_max, row_max_block(2));
       row_max = ::fmax(row_max, row_max_block(3));
+
     }
 
     ElementQK row_max_safe = row_max == -INFINITY ? 0 : row_max;
+
+    if (threadIdx.x == 0 || threadIdx.x == 128) {
+    CUTE_LOG(
+      "row_max: %f, row_max0: %f, row_max1: %f, row_max2: %f, row_max3: %f, row_max_safe: %f, old_row_max: %f\n",
+      row_max, row_max_block(0), row_max_block(1), row_max_block(2), row_max_block(3), row_max_safe, old_row_max
+    );
+    }
 
     Tensor tTMEM_STOREVrS = make_tensor<ElementQK>(shape(tTMEM_STOREVcS));
     tTMEM_STOREVrS(kIdxOldRowMax) = old_row_max;
@@ -863,42 +875,50 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     // notify correction wg that they are ready (might need addtl ordering between S0 and S1 WG's)
 
     ElementQK scale = params.scale_softmax_log2;
-    ElementQK row_max_scale = row_max_safe * scale;
-
     float2 scale_fp32x2 = make_float2(scale, scale);
-    float2 minus_row_max_scale_fp32x2 = make_float2(-row_max_scale, -row_max_scale);
 
 #ifdef MXFP8
     Array<float, 4> arr_SF_P_float;
+    Array<uint8_t, 4> arr_SF_P;
     {
       float2 row_max_x2 = make_float2(row_max, row_max);
       Tensor row_max_block_x2 = recast<float2>(row_max_block);
       float2 scale_mxfp8_log2_x2 = make_float2(params.scale_mxfp8_log2, params.scale_mxfp8_log2);
-      cute::sub(row_max_block_x2(0), row_max_x2, row_max_block_x2(0));
-      cute::sub(row_max_block_x2(1), row_max_x2, row_max_block_x2(1));
+      cute::sub(row_max_block_x2(0), row_max_block_x2(0), row_max_x2);
+      cute::sub(row_max_block_x2(1), row_max_block_x2(1), row_max_x2);
       cute::fma(*(reinterpret_cast<float2*>(arr_SF_P_float.data())), row_max_block_x2(0), scale_fp32x2, scale_mxfp8_log2_x2);
       cute::fma(*(reinterpret_cast<float2*>(arr_SF_P_float.data()) + 1), row_max_block_x2(1), scale_fp32x2, scale_mxfp8_log2_x2);
 
+      if (threadIdx.x == 0 || threadIdx.x == 128) {
+      CUTE_LOG(
+        "row_max: %f, row_max0: %f, row_max1: %f, row_max2: %f, row_max3: %f, scale_mxfp8_log2: %f, scale: %f, arr_SF_P_float0: %f, arr_SF_P_float1: %f, arr_SF_P_float2: %f, arr_SF_P_float3: %f\n",
+        row_max, row_max_block(0), row_max_block(1), row_max_block(2), row_max_block(3), params.scale_mxfp8_log2,scale, arr_SF_P_float[0], arr_SF_P_float[1], arr_SF_P_float[2], arr_SF_P_float[3]
+      );
+      }
+
       // TODO: optimize scale computation.
-      Array<uint8_t, 4> arr_SF_P;
       NumericArrayConverter<uint8_t, float, 4ul, FloatRoundStyle::round_toward_zero> sf_f2i_convert;
       arr_SF_P = sf_f2i_convert(arr_SF_P_float);
       NumericArrayConverter<float, uint8_t, 4ul> sf_i2f_convert;
       arr_SF_P_float = sf_i2f_convert(arr_SF_P);
 
       // Copy SF to shared memory.
-      auto tCsSFP_compact = group_modes<0, 3>(recast<float>(make_tensor(
+      auto tCsSFP_compact = group_modes<0, 3>(recast<uint32_t>(make_tensor(
         make_smem_ptr(storage.smem_sfp.begin()), 
         filter_zeros(typename CollectiveMmaPV::SmemLayoutSFA{})
       )));
 
       // TODO: fix smem layout based on softmax stage.
-      tCsSFP_compact(thread_idx, stage) = *reinterpret_cast<float*>(arr_SF_P.data());
+      tCsSFP_compact(thread_idx, stage) = *reinterpret_cast<uint32_t*>(arr_SF_P.data());
+      if (threadIdx.x == 0 || threadIdx.x == 128) {
       CUTE_LOG(
-        "thread_idx: %d, stage: %d, idx: %d, val: %f, val0: %f, val1: %f, val2: %f, val3: %f\n",
+        "thread_idx: %d, stage: %d, idx: %d, val0_i: %x, val1_i: %x, val2_i: %x, val3_i: %x, val: %u, val0: %f, val1: %f, val2: %f, val3: %f\n",
         thread_idx, stage, (int)(tCsSFP_compact.layout()(thread_idx, stage)), 
-        tCsSFP_compact(thread_idx, stage), arr_SF_P_float[0], arr_SF_P_float[1], arr_SF_P_float[2], arr_SF_P_float[3]
+        uint8_t(arr_SF_P[0]), uint8_t(arr_SF_P[1]), uint8_t(arr_SF_P[2]), uint8_t(arr_SF_P[3]),
+        tCsSFP_compact(thread_idx, stage), 
+        arr_SF_P_float[0], arr_SF_P_float[1], arr_SF_P_float[2], arr_SF_P_float[3]
       );
+      }
     }
 #endif
 
@@ -916,10 +936,15 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
 #ifdef MXFP8
     const int inner_n = kSFBlockSize;
+    ElementQK row_max_scale = row_max_safe * scale - cutlass::float_ue8m0_t::BitRepresentation::EXP_BIAS;  // row_max_safe * scale;
 #else
     const int inner_n = size(tTMEM_LOADrS);
+    ElementQK row_max_scale = row_max_safe * scale; // row_max_safe * scale;
 #endif
     const int outer_n = size(tTMEM_LOADrS) / inner_n;
+
+    float2 minus_row_max_scale_fp32x2 = make_float2(-row_max_scale, -row_max_scale);
+
     // int offset_i = 0;
     CUTLASS_PRAGMA_UNROLL
     for (int offset = 0, outer_i = 0; offset < size(tTMEM_LOADrS); offset += inner_n, outer_i += 1) {
@@ -942,14 +967,18 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         );
         float2 out;
         cute::fma(out, scale_fp32x2, in, modified_scale);
+        if (threadIdx.x == 0 || threadIdx.x == 128) {
         CUTE_LOG("fma (%d, %d): scale: (%f, %f), in: (%f, %f), modified_scale: (%f, %f), out: (%f, %f)\n", 
           offset_i, offset_i+1, scale_fp32x2.x, scale_fp32x2.y, in.x, in.y, modified_scale.x, modified_scale.y, out.x, out.y);
+        }
         tTMEM_LOADrS(offset_i + 0) = out.x;
         tTMEM_LOADrS(offset_i + 1) = out.y;
   
         tTMEM_LOADrS(offset_i + 0) = ::exp2f(tTMEM_LOADrS(offset_i + 0));
         tTMEM_LOADrS(offset_i + 1) = ::exp2f(tTMEM_LOADrS(offset_i + 1));
+        if (threadIdx.x == 0 || threadIdx.x == 128) {
         CUTE_LOG("P, before convert (%d, %d): %f, %f\n", offset_i, offset_i+1, tTMEM_LOADrS(offset_i + 0), tTMEM_LOADrS(offset_i + 1));
+        }
   
         Array<ElementQK, kConversionsPerStep> in_conv;
         CUTLASS_PRAGMA_UNROLL
@@ -957,10 +986,13 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
           in_conv[j] = tTMEM_LOADrS(offset_i + j);
         }
         tTMEM_STORErS_x4_e[(offset_i) / kConversionsPerStep] = convert(in_conv);
-        CUTE_LOG("P, after convert (%d): %x\n", 
+        if (threadIdx.x == 0 || threadIdx.x == 128) {
+        CUTE_LOG("P, after convert (%d): %f, %f\n", 
           int(offset_i / kConversionsPerStep), 
-          *reinterpret_cast<unsigned char*>(tTMEM_STORErS_x4_e.data() + (offset_i / kConversionsPerStep))
+          float(tTMEM_STORErS_x4_e(offset_i / kConversionsPerStep)[0]),
+          float(tTMEM_STORErS_x4_e(offset_i / kConversionsPerStep)[1])
         );
+        }
   
         if (offset_i == size(tTMEM_LOADrS) - kReleasePipeCount) {
           order_s.arrive();
@@ -990,34 +1022,48 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     ElementQK acc_scale = 0.5f * ::exp2f(scale * (old_row_max - row_max_safe));
     row_sum *= acc_scale;
+
     // row_sum = sum(reg_S)
     float2 local_row_sum_f32x2 = make_float2(row_sum, row_sum);
+    float2 local_row_sum_0 = make_float2(0, 0);
     float2 local_row_sum_1 = make_float2(0, 0);
     float2 local_row_sum_2 = make_float2(0, 0);
     float2 local_row_sum_3 = make_float2(0, 0);
 
     CUTLASS_PRAGMA_UNROLL
-    for (int i = 0; i < size(tTMEM_LOADrS); i += 8) {
+    for (int i = 0; i < int(kSFBlockSize / 2); i += 1) {
       // row_sum += tTMEM_LOADrS(i);
-      float2 in = make_float2(tTMEM_LOADrS(i), tTMEM_LOADrS(i+1));
-      cute::add(local_row_sum_f32x2, local_row_sum_f32x2, in);
+      float2 in = make_float2(tTMEM_LOADrS(i+i+kSFBlockSize*0), tTMEM_LOADrS(i+i+1+kSFBlockSize*0));
+      cute::add(local_row_sum_0, local_row_sum_0, in);
 
-      in = make_float2(tTMEM_LOADrS(i+2), tTMEM_LOADrS(i+2+1));
+      in = make_float2(tTMEM_LOADrS(i+i+kSFBlockSize*1), tTMEM_LOADrS(i+i+1+kSFBlockSize*1));
       cute::add(local_row_sum_1, local_row_sum_1, in);
 
-      in = make_float2(tTMEM_LOADrS(i+4), tTMEM_LOADrS(i+4+1));
+      in = make_float2(tTMEM_LOADrS(i+i+kSFBlockSize*2), tTMEM_LOADrS(i+i+1+kSFBlockSize*2));
       cute::add(local_row_sum_2, local_row_sum_2, in);
 
-      in = make_float2(tTMEM_LOADrS(i+6), tTMEM_LOADrS(i+6+1));
+      in = make_float2(tTMEM_LOADrS(i+i+kSFBlockSize*3), tTMEM_LOADrS(i+i+1+kSFBlockSize*3));
       cute::add(local_row_sum_3, local_row_sum_3, in);
     }
 
-    cute::add(local_row_sum_f32x2, local_row_sum_f32x2, local_row_sum_1);
-    cute::add(local_row_sum_2, local_row_sum_2, local_row_sum_3);
-    cute::add(local_row_sum_f32x2, local_row_sum_f32x2, local_row_sum_2);
+#ifdef MXFP8
+    NumericArrayConverter<float, cutlass::float_ue8m0_t, 4ul> sf_e8m0_to_f_convert;
+    Array<float, 4> arr_SF_P_fp;
+    arr_SF_P_fp = sf_e8m0_to_f_convert.convert(reinterpret_cast<Array<cutlass::float_ue8m0_t, 4> const&>(arr_SF_P));
+    cute::fma(local_row_sum_f32x2, local_row_sum_0, make_float2(arr_SF_P_fp[0], arr_SF_P_fp[0]), local_row_sum_f32x2);
+    cute::fma(local_row_sum_f32x2, local_row_sum_1, make_float2(arr_SF_P_fp[1], arr_SF_P_fp[1]), local_row_sum_f32x2);
+    cute::fma(local_row_sum_f32x2, local_row_sum_2, make_float2(arr_SF_P_fp[2], arr_SF_P_fp[2]), local_row_sum_f32x2);
+    cute::fma(local_row_sum_f32x2, local_row_sum_3, make_float2(arr_SF_P_fp[3], arr_SF_P_fp[3]), local_row_sum_f32x2);
+#else
+    cute::add(local_row_sum_f32x2, local_row_sum_0, local_row_sum_f32x2);
+    cute::add(local_row_sum_f32x2, local_row_sum_1, local_row_sum_f32x2);
+    cute::add(local_row_sum_f32x2, local_row_sum_2, local_row_sum_f32x2);
+    cute::add(local_row_sum_f32x2, local_row_sum_3, local_row_sum_f32x2);
+#endif
     float local_row_sum = local_row_sum_f32x2.x + local_row_sum_f32x2.y;
 
     row_sum = local_row_sum;
+    CUTE_LOG("row_sum: %f\n", row_sum);
 
     if (final_call) {
       // re-acquire the S part in the final step
@@ -1161,6 +1207,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         cute::mul(out, scale_f32x2, in);
         tTMrO(j) = out.x;
         tTMrO(j+1) = out.y;
+        CUTE_LOG("correction_epilogue: idx: (%d, %d), scale: (%f, %f), in: (%f, %f), out: (%f, %f)\n", j, j+1, scale_f32x2.x, scale_f32x2.y, in.x, in.y, out.x, out.y);
       }
 #endif
 
@@ -1262,6 +1309,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         cute::mul(out, scale_f32x2, in);
         tTMrO_i(j) = out.x;
         tTMrO_i(j+1) = out.y;
+        CUTE_LOG("rescale: idx: (%d, %d), scale: (%f, %f), in: (%f, %f), out: (%f, %f)\n", j, j+1, scale_f32x2.x, scale_f32x2.y, in.x, in.y, out.x, out.y);
       }
 
       copy_out(i);
