@@ -83,7 +83,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
   static constexpr int StageCountQ = 2;
   static constexpr int StageCountKV = sizeof(Element_) == 1 ? 4 : 3;
-  static constexpr bool BlockScaleEnabled = std::is_same_v<Element, CollectiveElement>;
+  static constexpr bool BlockScaleEnabled = !(std::is_same_v<Element, CollectiveElement>);
 
   using StagesQ = cutlass::gemm::collective::StageCount<StageCountQ>;
   using StagesKV = cutlass::gemm::collective::StageCount<StageCountKV>;
@@ -98,22 +98,36 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
   using CollectiveMmaQK = typename cutlass::gemm::collective::CollectiveBuilder<
       cutlass::arch::Sm100,
-      std::conditional_t<BlockScaleEnabled, cutlass::arch::OpClassTensorOp, cutlass::arch::OpClassBlockScaledTensorOp>,
+      std::conditional_t<BlockScaleEnabled, cutlass::arch::OpClassBlockScaledTensorOp, cutlass::arch::OpClassTensorOp>,
       CollectiveElement, StrideQ, Alignment,
       CollectiveElement, StrideK, Alignment,
       ElementQK,
       TileShapeQK, ClusterShape, cutlass::gemm::collective::StageCount<3> /* we change it later anyways*/,
-      std::conditional_t<BlockScaleEnabled, cutlass::gemm::KernelTmaWarpSpecialized1SmSm100, cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100>>::CollectiveOp;
+      std::conditional_t<BlockScaleEnabled, cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100, cutlass::gemm::KernelTmaWarpSpecialized1SmSm100>>::CollectiveOp;
 
   using CollectiveMmaPV = typename cutlass::gemm::collective::CollectiveBuilder<
       cutlass::arch::Sm100,
-      std::conditional_t<BlockScaleEnabled, cutlass::arch::OpClassTensorOp, cutlass::arch::OpClassBlockScaledTensorOp>,
+      std::conditional_t<BlockScaleEnabled, cutlass::arch::OpClassBlockScaledTensorOp, cutlass::arch::OpClassTensorOp>,
       // the stride for A does not matter since we do not load from smem at all
       CollectiveElement, StrideK, Alignment,
       CollectiveElement, decltype(select<1,0,2>(StrideV{})), Alignment,
       ElementPV,
       TileShapePV, ClusterShape, cutlass::gemm::collective::StageCount<3> /* we change it later anyways*/,
-      std::conditional_t<BlockScaleEnabled, cutlass::gemm::KernelTmaWarpSpecialized1SmSm100, cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100>>::CollectiveOp;
+      std::conditional_t<BlockScaleEnabled, cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100, cutlass::gemm::KernelTmaWarpSpecialized1SmSm100>>::CollectiveOp;
+
+  using CollectiveMmaPVFP8 = typename cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::Sm100,
+      // std::conditional_t<BlockScaleEnabled, cutlass::arch::OpClassTensorOp, cutlass::arch::OpClassBlockScaledTensorOp>,
+      std::conditional_t<false, cutlass::arch::OpClassBlockScaledTensorOp, cutlass::arch::OpClassTensorOp>,
+      // the stride for A does not matter since we do not load from smem at all
+      // CollectiveElement, StrideK, Alignment,
+      Element, StrideK, Alignment,
+      // CollectiveElement, decltype(select<1,0,2>(StrideV{})), Alignment,
+      Element, decltype(select<1,0,2>(StrideV{})), Alignment,
+      ElementPV,
+      TileShapePV, ClusterShape, cutlass::gemm::collective::StageCount<3> /* we change it later anyways*/,
+      // std::conditional_t<BlockScaleEnabled, cutlass::gemm::KernelTmaWarpSpecialized1SmSm100, cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100>>::CollectiveOp;
+      std::conditional_t<false, cutlass::gemm::KernelTmaWarpSpecialized1SmBlockScaledSm100, cutlass::gemm::KernelTmaWarpSpecialized1SmSm100>>::CollectiveOp;
 
   using SmemLayoutQ = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutA{}, Int<StageCountQ>{}));
   using SmemLayoutK = decltype(unstageSmemLayout(typename CollectiveMmaQK::SmemLayoutB{}, Int<StageCountKV>{}));
@@ -148,22 +162,23 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     kSizeO = 128,
     kSizeP = 32,
     kSizeSF = 4,
-    kOffsetSF = 384,  // SF offset
     S0 = 0,
-    S1 = S0 + kSizeS,
+    S1 = S0 + kSizeS,  // 128
     V0 = S0,  // stats storage from softmax to correction
     V1 = S1,
-    P0 = S0 + kSizeP,
-    P1 = S1 + kSizeP,
-    O0 = S1 + kSizeS,
-    O1 = O0 + kSizeO,
-    SFQ0 = kOffsetSF,
-    SFQ1 = kSizeSF + SFQ0,
-    SFK = kSizeSF + SFQ1,
-    SFV = kSizeSF + SFK,
-    SFP0 = kSizeSF + SFV,
-    SFP1 = kSizeSF + SFP0,
-    kEnd = kSizeSF + SFP1
+    P0 = S0 + kSizeP,  // 32
+    P1 = S1 + kSizeP,  // 160
+    O0 = S1 + kSizeS,  // 256
+    O1 = O0 + kSizeO,  // 384
+    SFQ0 = O1,  // SFQ0 is overlapped with O1
+    SFQ1 = O0,  // SFQ1 is overlapped with O0
+    SFK0 = kSizeSF + SFQ0,
+    SFK1 = kSizeSF + SFQ1,
+    SFP0 = kSizeSF + P0,
+    SFP1 = kSizeSF + P1,
+    SFV0 = kSizeSF + SFP0,
+    SFV1 = kSizeSF + SFP1,
+    kEnd = 512,
   };
 
   // indices for V0 / V1
@@ -327,6 +342,24 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       PipelineO& pipeline_corr, typename PipelineO::PipelineState& pipeline_corr_producer_state,
       uint32_t tmem_base_ptr) {
 
+    // if (cute::elect_one_sync()) {
+    //   print("TMEM::S0: %d\n", int(TmemAllocation::S0));
+    //   print("TMEM::S1: %d\n", int(TmemAllocation::S1));
+    //   print("TMEM::V0: %d\n", int(TmemAllocation::V0));
+    //   print("TMEM::V1: %d\n", int(TmemAllocation::V1));
+    //   print("TMEM::P0: %d\n", int(TmemAllocation::P0));
+    //   print("TMEM::P1: %d\n", int(TmemAllocation::P1));
+    //   print("TMEM::O0: %d\n", int(TmemAllocation::O0));
+    //   print("TMEM::O1: %d\n", int(TmemAllocation::O1));
+    //   print("TMEM::SFQ0: %d\n", int(TmemAllocation::SFQ0));
+    //   print("TMEM::SFQ1: %d\n", int(TmemAllocation::SFQ1));
+    //   print("TMEM::SFK0: %d\n", int(TmemAllocation::SFK0));
+    //   print("TMEM::SFK1: %d\n", int(TmemAllocation::SFK1));
+    //   print("TMEM::SFV0: %d\n", int(TmemAllocation::SFV0));
+    //   print("TMEM::SFV1: %d\n", int(TmemAllocation::SFV1));
+    //   print("TMEM::SFP0: %d\n", int(TmemAllocation::SFP0));
+    //   print("TMEM::SFP1: %d\n", int(TmemAllocation::SFP1));
+    // }
     auto pipeline_q_release_state = pipeline_q_consumer_state;
     auto pipeline_kv_release_state = pipeline_kv_consumer_state;
 
@@ -335,6 +368,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     typename CollectiveMmaQK::TiledMma mma_qk;
     ThrMMA thr_mma_qk = mma_qk.get_slice(0);
 
+    // typename CollectiveMmaPVFP8::TiledMma mma_pv;
     typename CollectiveMmaPV::TiledMma mma_pv;
     TiledMMA mma_pv_ts = to_tiled_mma_sm100_ts(mma_pv);
     ThrMMA thr_mma_pv = mma_pv_ts.get_slice(0);
@@ -382,14 +416,23 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     tCtSFQ1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ1);
     Tensor tCtSFQ1_compact = make_tensor(tCtSFQ1.data(), filter_zeros(tCtSFQ1.layout()));
 
-    Tensor tCtSFK = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFB>(
+    Tensor tCtSFK0 = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFB>(
       typename CollectiveMmaQK::SmemLayoutAtomSFB{});
-    tCtSFK.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK);
-    Tensor tCtSFK_compact = make_tensor(tCtSFK.data(), filter_zeros(tCtSFK.layout()));
-    Tensor tCtSFV = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFB>(
-      shape(typename CollectiveMmaPV::SmemLayoutAtomSFB{}));
-    tCtSFV.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFV);
-    Tensor tCtSFV_compact = make_tensor(tCtSFV.data(), filter_zeros(tCtSFV.layout()));
+    tCtSFK0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK0);
+    Tensor tCtSFK0_compact = make_tensor(tCtSFK0.data(), filter_zeros(tCtSFK0.layout()));
+    Tensor tCtSFK1 = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFB>(
+      typename CollectiveMmaQK::SmemLayoutAtomSFB{});
+    tCtSFK1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK1);
+    Tensor tCtSFK1_compact = make_tensor(tCtSFK1.data(), filter_zeros(tCtSFK1.layout()));
+ 
+    Tensor tCtSFV0 = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFB>(
+      typename CollectiveMmaPV::SmemLayoutAtomSFB{});
+    tCtSFV0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFV0);
+    Tensor tCtSFV0_compact = make_tensor(tCtSFV0.data(), filter_zeros(tCtSFV0.layout()));
+    Tensor tCtSFV1 = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFB>(
+      typename CollectiveMmaPV::SmemLayoutAtomSFB{});
+    tCtSFV1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFV1);
+    Tensor tCtSFV1_compact = make_tensor(tCtSFV1.data(), filter_zeros(tCtSFV1.layout()));
 
     auto tCsSFQ_compact = make_tensor(
       make_smem_ptr(storage.smem_sfq.begin()), 
@@ -409,8 +452,8 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     using UtccpOp = cute::conditional_t<(decltype(cute::size(AtomThrID{}) == Int<2>{})::value),
       SM100_UTCCP_4x32dp128bit_2cta, SM100_UTCCP_4x32dp128bit_1cta>;
     auto tiled_copy_s2t_SFQ = make_utccp_copy(UtccpOp{}, tCtSFQ0_compact);
-    auto tiled_copy_s2t_SFK = make_utccp_copy(UtccpOp{}, tCtSFK_compact);
-    auto tiled_copy_s2t_SFV = make_utccp_copy(UtccpOp{}, tCtSFV_compact);
+    auto tiled_copy_s2t_SFK = make_utccp_copy(UtccpOp{}, tCtSFK0_compact);
+    auto tiled_copy_s2t_SFV = make_utccp_copy(UtccpOp{}, tCtSFV0_compact);
   
     auto thr_copy_s2t_SFQ = tiled_copy_s2t_SFQ.get_slice(0);
     auto thr_tCsSFQ_s2t_ = thr_copy_s2t_SFQ.partition_S(tCsSFQ_compact);
@@ -423,20 +466,21 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     auto thr_tCsSFK_s2t_ = thr_copy_s2t_SFK.partition_S(tCsSFK_compact);
     // SMEM to TMEM copy operation requires source SMEM operand to be an SMEM descriptor
     auto thr_tCsSFK_s2t = get_utccp_smem_desc_tensor<UtccpOp>(thr_tCsSFK_s2t_);
-    auto thr_tCtSFK_s2t = thr_copy_s2t_SFK.partition_D(tCtSFK_compact);
+    auto thr_tCtSFK0_s2t = thr_copy_s2t_SFK.partition_D(tCtSFK0_compact);
+    auto thr_tCtSFK1_s2t = thr_copy_s2t_SFK.partition_D(tCtSFK1_compact);
 
     Tensor tCtSFP0 = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFA>( 
-      shape(typename CollectiveMmaPV::SmemLayoutAtomSFA{}));
+      typename CollectiveMmaPV::SmemLayoutAtomSFA{});
     tCtSFP0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFP0);
     Tensor tCtSFP0_compact = make_tensor(tCtSFP0.data(), filter_zeros(tCtSFP0.layout()));
     Tensor tCtSFP1 = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFA>(
-      shape(typename CollectiveMmaPV::SmemLayoutAtomSFA{}));
+      typename CollectiveMmaPV::SmemLayoutAtomSFA{});
     tCtSFP1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFP1);
     Tensor tCtSFP1_compact = make_tensor(tCtSFP1.data(), filter_zeros(tCtSFP1.layout()));
 
     auto tCsSFP_compact = make_tensor(
       make_smem_ptr(storage.smem_sfp.begin()), 
-      filter_zeros(typename CollectiveMmaPV::SmemLayoutSFA{})
+      filter_zeros(SmemLayoutSFP{})
     );
 
     auto tiled_copy_s2t_SFP = make_utccp_copy(UtccpOp{}, tCtSFP0_compact);
@@ -451,7 +495,8 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     auto thr_tCsSFV_s2t_ = thr_copy_s2t_SFV.partition_S(tCsSFV_compact);
     // SMEM to TMEM copy operation requires source SMEM operand to be an SMEM descriptor
     auto thr_tCsSFV_s2t = get_utccp_smem_desc_tensor<UtccpOp>(thr_tCsSFV_s2t_);
-    auto thr_tCtSFV_s2t = thr_copy_s2t_SFV.partition_D(tCtSFV_compact);
+    auto thr_tCtSFV0_s2t = thr_copy_s2t_SFV.partition_D(tCtSFV0_compact);
+    auto thr_tCtSFV1_s2t = thr_copy_s2t_SFV.partition_D(tCtSFV1_compact);
 #endif
 
     int k_index = 0;
@@ -485,7 +530,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     ++pipeline_kv_consumer_state;
 #ifdef MXFP8
     if (cute::elect_one_sync()) {
-      copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK_s2t);
+      copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK0_s2t);
     }
 #endif
 
@@ -493,7 +538,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     // gemm Q1 * K1 -> S1
 #ifdef MXFP8
-    gemm_zero_acc(mma_qk, tSrQ0, tSrK(_,_,_,k_index), tStS0, tCtSFQ0, tCtSFK);
+    gemm_zero_acc(mma_qk, tSrQ0, tSrK(_,_,_,k_index), tStS0, tCtSFQ0, tCtSFK0);
 #else
     gemm_zero_acc(mma_qk, tSrQ0, tSrK(_,_,_,k_index), tStS0);
 #endif
@@ -521,6 +566,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       // print_tensor(thr_tCsSFQ_s2t_(_,_,_,_,q_index));
       // printf("\n");
       copy(tiled_copy_s2t_SFQ, thr_tCsSFQ_s2t(_,_,_,_,q_index), thr_tCtSFQ1_s2t);
+      copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK1_s2t);
     // } else {
     //   unsigned long long start_clock = clock64();
     //   while (clock64() - start_clock < 1600000000) {
@@ -539,7 +585,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         // printf("thr_tCsSFK_s2t(_,_,_,_,%d)\n", k_index);
         // print_tensor(thr_tCsSFK_s2t_(_,_,_,_,k_index));
         // printf("\n");
-        copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK_s2t);
+        copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK1_s2t);
       // } else {
       //   unsigned long long start_clock = clock64();
       //   while (clock64() - start_clock < 1600000000) {
@@ -553,7 +599,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     // gemm Q2 * K1 -> S2
 #ifdef MXFP8
-    gemm_zero_acc(mma_qk, tSrQ1, tSrK(_,_,_,k_index), tStS1, tCtSFQ1, tCtSFK);
+    gemm_zero_acc(mma_qk, tSrQ1, tSrK(_,_,_,k_index), tStS1, tCtSFQ1, tCtSFK1);
 #else
     gemm_zero_acc(mma_qk, tSrQ1, tSrK(_,_,_,k_index), tStS1);
 #endif
@@ -571,7 +617,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     ++pipeline_kv_consumer_state;
 #ifdef MXFP8
     if (cute::elect_one_sync()) {
-      copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV_s2t);
+      copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV0_s2t);
     }
 #endif
 
@@ -586,8 +632,29 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     if (cute::elect_one_sync()) {
       copy(tiled_copy_s2t_SFP, thr_tCsSFP_s2t(_,_,_,_,0), thr_tCtSFP0_s2t);
     }
+
+    if (cute::elect_one_sync()) {
+    // printf("V\n");
+    // print(tOrV(_,_,_,v_index));
+    // printf("\n");
+    // printf("smem SFP0\n");
+    // print(typename CollectiveMmaPV::SmemLayoutAtomSFA{});
+    // print("\n");
+    // printf("SFP0\n");
+    // print_tensor(thr_tCsSFP_s2t_(_,_,_,_,0));
+    // printf("\n");
+    // printf("tCtSFP0\n");
+    // print(tCtSFP0);
+    // print("\n");
+    // print(tCtSFP0.layout());
+    // printf("\n");
+    // printf("SFV\n");
+    // print_tensor(thr_tCsSFV_s2t_(_,_,_,_,v_index));
+    // printf("\n");
+    }
     // gemm P1 * V1 -> O1
-    gemm_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0, tCtSFP0, tCtSFV);
+    gemm_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0, tCtSFP0, tCtSFV0);
+    // gemm_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0);
 #else
     // gemm P1 * V1 -> O1
     gemm_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0);
@@ -613,10 +680,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       ++pipeline_kv_consumer_state;
 #ifdef MXFP8
       if (cute::elect_one_sync()) {
-        copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK_s2t);
+        copy(tiled_copy_s2t_SFQ, thr_tCsSFQ_s2t(_,_,_,_,0), thr_tCtSFQ0_s2t);
+        copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK0_s2t);
       }
       // gemm Q1 * Ki -> S1
-      gemm_zero_acc(mma_qk, tSrQ0, tSrK(_,_,_,k_index), tStS0, tCtSFQ0, tCtSFK);
+      gemm_zero_acc(mma_qk, tSrQ0, tSrK(_,_,_,k_index), tStS0, tCtSFQ0, tCtSFK0);
 #else
       // gemm Q1 * Ki -> S1
       gemm_zero_acc(mma_qk, tSrQ0, tSrK(_,_,_,k_index), tStS0);
@@ -637,7 +705,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         ++pipeline_kv_consumer_state;
 #ifdef MXFP8
         if (cute::elect_one_sync()) {
-          copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV_s2t);
+          copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV1_s2t);
         }
 #endif
       }
@@ -649,7 +717,25 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       if (cute::elect_one_sync()) {
         copy(tiled_copy_s2t_SFP, thr_tCsSFP_s2t(_,_,_,_,1), thr_tCtSFP1_s2t);
       }
-      gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1, tCtSFP1, tCtSFV);
+      if (cute::elect_one_sync()) {
+      // printf("V\n");
+      // print(tOrV(_,_,_,v_index));
+      // printf("\n");
+      // printf("smem SFP1\n");
+      // print(typename CollectiveMmaPV::SmemLayoutAtomSFA{});
+      // print("\n");
+      // printf("SFP1\n");
+      // print_tensor(thr_tCsSFP_s2t_(_,_,_,_,1));
+      // printf("\n");
+      // printf("tCtSFP1\n");
+      // print(tCtSFP1);
+      // printf("\n");
+      // printf("SFV\n");
+      // print_tensor(thr_tCsSFV_s2t_(_,_,_,_,v_index));
+      // printf("\n");
+      }
+      gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1, tCtSFP1, tCtSFV1);
+      // gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1);
 #else
       gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1);
 #endif
@@ -665,16 +751,18 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         k_index = (pipeline_kv_consumer_state.index());
         pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
         ++pipeline_kv_consumer_state;
-#ifdef MXFP8
-        if (cute::elect_one_sync()) {
-          copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK_s2t);
-        }
-#endif
       }
+
+#ifdef MXFP8
+      if (cute::elect_one_sync()) {
+        copy(tiled_copy_s2t_SFQ, thr_tCsSFK_s2t(_,_,_,_,1), thr_tCtSFQ1_s2t);
+        copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK1_s2t);
+      }
+#endif
 
       // gemm Q2 * Ki -> S2
 #ifdef MXFP8
-      gemm_zero_acc(mma_qk, tSrQ1, tSrK(_,_,_,k_index), tStS1, tCtSFQ1, tCtSFK);
+      gemm_zero_acc(mma_qk, tSrQ1, tSrK(_,_,_,k_index), tStS1, tCtSFQ1, tCtSFK1);
 #else
       gemm_zero_acc(mma_qk, tSrQ1, tSrK(_,_,_,k_index), tStS1);
 #endif
@@ -692,19 +780,36 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       ++pipeline_kv_consumer_state;
 #ifdef MXFP8
       if (cute::elect_one_sync()) {
-        copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV_s2t);
+        copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV0_s2t);
       }
 #endif
 
       // gemm P1 * Vi -> O1
       pipeline_corr.producer_acquire(pipeline_corr_producer_state);
-
       pipeline_s0.producer_acquire(pipeline_s0_producer_state);
 #ifdef MXFP8
       if (cute::elect_one_sync()) {
         copy(tiled_copy_s2t_SFP, thr_tCsSFP_s2t(_,_,_,_,0), thr_tCtSFP0_s2t);
       }
-      gemm_reset_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0, tCtSFP0, tCtSFV);
+      if (cute::elect_one_sync()) {
+      // printf("V\n");
+      // print(tOrV(_,_,_,v_index));
+      // printf("\n");
+      // printf("smem SFP0\n");
+      // print(typename CollectiveMmaPV::SmemLayoutAtomSFA{});
+      // print("\n");
+      // printf("SFP0\n");
+      // print_tensor(thr_tCsSFP_s2t_(_,_,_,_,0));
+      // printf("\n");
+      // printf("tCtSFP0\n");
+      // print(tCtSFP0);
+      // printf("\n");
+      // printf("SFV\n");
+      // print_tensor(thr_tCsSFV_s2t_(_,_,_,_,v_index));
+      // printf("\n");
+      }
+      gemm_reset_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0, tCtSFP0, tCtSFV0);
+      // gemm_reset_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0);
 #else
       gemm_reset_zero_acc(mma_pv_ts, tOrP0, tOrV(_,_,_,v_index), tOtO0);
 #endif
@@ -735,7 +840,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       ++pipeline_kv_consumer_state;
 #ifdef MXFP8
       if (cute::elect_one_sync()) {
-        copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV_s2t);
+        copy(tiled_copy_s2t_SFV, thr_tCsSFV_s2t(_,_,_,_,v_index), thr_tCtSFV1_s2t);
       }
 #endif
     }
@@ -747,7 +852,26 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     if (cute::elect_one_sync()) {
       copy(tiled_copy_s2t_SFP, thr_tCsSFP_s2t(_,_,_,_,1), thr_tCtSFP1_s2t);
     }
-    gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1, tCtSFP1, tCtSFV);
+    if (cute::elect_one_sync()) {
+    // printf("V\n");
+    // print(tOrV(_,_,_,v_index));
+    // printf("\n");
+    // printf("smem SFP1\n");
+    // print(typename CollectiveMmaPV::SmemLayoutAtomSFA{});
+    // print("\n");
+    // printf("SFP1\n");
+    // print_tensor(thr_tCsSFP_s2t_(_,_,_,_,1));
+    // printf("\n");
+    // printf("tCtSFP1\n");
+    // print(tCtSFP1);
+    // printf("\n");
+    // printf("SFV\n");
+    // print_tensor(thr_tCsSFV_s2t_(_,_,_,_,v_index));
+    // printf("\n");
+    }
+ 
+    gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1, tCtSFP1, tCtSFV1);
+    // gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1);
 #else
     gemm_reset_zero_acc(mma_pv_ts, tOrP1, tOrV(_,_,_,v_index), tOtO1);
 #endif
@@ -779,6 +903,9 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       PipelineS& pipeline_s, typename PipelineS::PipelineState& pipeline_s_consumer_state,
       PipelineC& pipeline_c, typename PipelineC::PipelineState& pipeline_c_producer_state,
       OrderBarrierSoftmax& order_s, TensorStorage& storage) {
+    if (threadIdx.x == 0 || threadIdx.x == 128) {
+    CUTE_LOG("==== softmax_step: %d ====\n", stage);
+    }
 
     Tensor tScS = typename CollectiveMmaQK::TiledMma{}.get_slice(0).partition_C(cS);
 
@@ -889,6 +1016,11 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       cute::fma(*(reinterpret_cast<float2*>(arr_SF_P_float.data())), row_max_block_x2(0), scale_fp32x2, scale_mxfp8_log2_x2);
       cute::fma(*(reinterpret_cast<float2*>(arr_SF_P_float.data()) + 1), row_max_block_x2(1), scale_fp32x2, scale_mxfp8_log2_x2);
 
+      // arr_SF_P_float[0] = 127;
+      // arr_SF_P_float[1] = 127;
+      // arr_SF_P_float[2] = 127;
+      // arr_SF_P_float[3] = 127;
+
       if (threadIdx.x == 0 || threadIdx.x == 128) {
       CUTE_LOG(
         "row_max: %f, row_max0: %f, row_max1: %f, row_max2: %f, row_max3: %f, scale_mxfp8_log2: %f, scale: %f, arr_SF_P_float0: %f, arr_SF_P_float1: %f, arr_SF_P_float2: %f, arr_SF_P_float3: %f\n",
@@ -903,13 +1035,45 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       arr_SF_P_float = sf_i2f_convert(arr_SF_P);
 
       // Copy SF to shared memory.
+      auto tCsSFP_tmp = group_modes<0, 3>(make_tensor(
+        make_smem_ptr(storage.smem_sfp.begin()), 
+        filter_zeros(SmemLayoutSFP{})
+      ));
       auto tCsSFP_compact = group_modes<0, 3>(recast<uint32_t>(make_tensor(
         make_smem_ptr(storage.smem_sfp.begin()), 
-        filter_zeros(typename CollectiveMmaPV::SmemLayoutSFA{})
+        filter_zeros(SmemLayoutSFP{})
       )));
 
+      // if (threadIdx.x == 0) {
+      //   print("SmemLayoutSFP\n");
+      //   print(SmemLayoutSFP{});
+      //   print("\n");
+      //   print("SmemLayoutSFP_compact\n");
+      //   print(filter_zeros(SmemLayoutSFP{}));
+      //   print("\n");
+      //   print("tCsSFP_tmp\n");
+      //   print(tCsSFP_tmp);
+      //   print("\n");
+      //   print("tCsSFP_compact\n");
+      //   print(tCsSFP_compact);
+      //   print("\n");
+      //   // printf(
+      //   //   "layout(0, 0, 0, 0): %d, layout(0, 32, 0, 0): %d, layout_compact(0, 0, 0, 0): %d, layout_compact(0, 1, 0, 0): %d\n",
+      //   //   SmemLayoutSFP{}(0, 0, 0, 0), SmemLayoutSFP{}(0, 32, 0, 0), filter_zeros(SmemLayoutSFP{})(0, 0, 0, 0), filter_zeros(SmemLayoutSFP{})(0, 1, 0, 0)
+      //   // );
+      //   // printf(
+      //   //   "tCsSFP_tmp(0, 0): %d, tCsSFP_tmp(1, 0): %d, tCsSFP_compact(0, 0): %d, tCsSFP_compact(1, 0): %d\n",
+      //   //   tCsSFP_tmp.layout()(0, 0), tCsSFP_tmp.layout()(1, 0), tCsSFP_compact.layout()(0, 0), tCsSFP_compact.layout()(1, 0)
+      //   // );
+      // } else {
+      //   unsigned long long start_clock = clock64();
+      //   while (clock64() - start_clock < 160000000) {
+      //       // Busy wait
+      //   }
+      // }
+
       // TODO: fix smem layout based on softmax stage.
-      tCsSFP_compact(thread_idx, stage) = *reinterpret_cast<uint32_t*>(arr_SF_P.data());
+      tCsSFP_compact(thread_idx, stage) = *(reinterpret_cast<uint32_t*>(arr_SF_P.data()));
       if (threadIdx.x == 0 || threadIdx.x == 128) {
       CUTE_LOG(
         "thread_idx: %d, stage: %d, idx: %d, val0_i: %x, val1_i: %x, val2_i: %x, val3_i: %x, val: %u, val0: %f, val1: %f, val2: %f, val3: %f\n",
@@ -984,6 +1148,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         CUTLASS_PRAGMA_UNROLL
         for (int j = 0; j < kConversionsPerStep; j++) {
           in_conv[j] = tTMEM_LOADrS(offset_i + j);
+          // in_conv[j] = 1.0f / 128;
         }
         tTMEM_STORErS_x4_e[(offset_i) / kConversionsPerStep] = convert(in_conv);
         if (threadIdx.x == 0 || threadIdx.x == 128) {
@@ -1063,7 +1228,9 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     float local_row_sum = local_row_sum_f32x2.x + local_row_sum_f32x2.y;
 
     row_sum = local_row_sum;
+    if (threadIdx.x == 0 || threadIdx.x == 128) {
     CUTE_LOG("row_sum: %f\n", row_sum);
+    }
 
     if (final_call) {
       // re-acquire the S part in the final step
@@ -1207,7 +1374,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
         cute::mul(out, scale_f32x2, in);
         tTMrO(j) = out.x;
         tTMrO(j+1) = out.y;
-        CUTE_LOG("correction_epilogue: idx: (%d, %d), scale: (%f, %f), in: (%f, %f), out: (%f, %f)\n", j, j+1, scale_f32x2.x, scale_f32x2.y, in.x, in.y, out.x, out.y);
+        CUTE_LOG("correction_epilogue: stage: %d, idx: i: %d, j: (%d, %d), scale: (%f, %f), in: (%f, %f), out: (%f, %f)\n", int(stage), i, j, j+1, scale_f32x2.x, scale_f32x2.y, in.x, in.y, out.x, out.y);
       }
 #endif
 

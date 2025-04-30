@@ -601,9 +601,12 @@ struct FwdRunner {
     block_ref_O.reset(size(shape_QO));
     block_ref_LSE.reset(size(shape_LSE));
 
-    initialize_block(block_Q, seed + 2023, options.init_style_q);
-    initialize_block(block_K, seed + 2022, options.init_style_k);
-    initialize_block(block_V, seed + 2021, options.init_style_v);
+    // initialize_block(block_Q, seed + 2023, options.init_style_q);
+    initialize_block(block_Q, seed + 2023, InitStyle::kOne);
+    // initialize_block(block_K, seed + 2022, options.init_style_k);
+    initialize_block(block_K, seed + 2022, InitStyle::kOne);
+    // initialize_block(block_V, seed + 2021, options.init_style_v);
+    initialize_block(block_V, seed + 2021, InitStyle::kOne);
 
 #ifdef MXFP8
     int SF_D = D / kSFBlockSize;

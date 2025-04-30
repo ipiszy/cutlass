@@ -104,10 +104,10 @@ void __global__ fmha_reference_kernel(
 #ifdef MXFP8
           ElementSF eQ_sf = mQ_sf(idx_Q + offset_Q, idx_D / kSFBlockSize_, idx_L);
           ElementSF eK_sf = mK_sf(idx_K + offset_K, idx_D / kSFBlockSize_, idx_L);
-          CUTE_LOG("idx_Q: %d, idx_K: %d: eQ_sf: %x, eK_sf: %x\n", 
-            idx_Q, idx_K, 
-            *(reinterpret_cast<uint8_t*>(&eQ_sf)), *(reinterpret_cast<uint8_t*>(&eK_sf))
-          );
+          // CUTE_LOG("idx_Q: %d, idx_K: %d: eQ_sf: %x, eK_sf: %x\n", 
+          //   idx_Q, idx_K, 
+          //   *(reinterpret_cast<uint8_t*>(&eQ_sf)), *(reinterpret_cast<uint8_t*>(&eK_sf))
+          // );
           eQK *= eQ_sf * eK_sf;
 #endif
           acc += eQK;

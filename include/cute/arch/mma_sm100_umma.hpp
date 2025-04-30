@@ -1020,7 +1020,11 @@ struct SM100_MMA_MXF8F6F4_SS
   {
 #if defined(CUTE_ARCH_TCGEN05_MXF8F6F4_MMA_ENABLED)
     if (cute::elect_one_sync()) {
-      // CUTE_LOG("tmem_c: %u, tsfa_addr: %u, tsfb_addr: %u\n", tmem_c, tsfa_addr, tsfb_addr);
+      CUTE_LOG(
+        "MXF8SS: tmem_c: %u, tsfa_addr: %u, tsfb_addr: %u, scaleC: %u\n", 
+        tmem_c, tsfa_addr, tsfb_addr, scaleC
+      );
+ 
       asm volatile(
         "{\n\t"
         ".reg .pred p;\n\t"
@@ -1062,7 +1066,10 @@ struct SM100_MMA_MXF8F6F4_TS
   {
 #if defined(CUTE_ARCH_TCGEN05_MXF8F6F4_MMA_ENABLED)
     if (cute::elect_one_sync()) {
-      // CUTE_LOG("tmem_c: %u, tsfa_addr: %u, tsfb_addr: %u\n", tmem_c, tsfa_addr, tsfb_addr);
+      CUTE_LOG(
+        "MXF8TS: tmem_a: %u, tmem_c: %u, tsfa_addr: %u, tsfb_addr: %u, scaleC: %u\n", 
+        tmem_a, tmem_c, tsfa_addr, tsfb_addr, scaleC
+      );
       asm volatile(
         "{\n\t"
         ".reg .pred p;\n\t"
@@ -1106,6 +1113,10 @@ struct SM100_MMA_F8F6F4_TS
   {
 #if defined(CUTE_ARCH_TCGEN05_MXF8F6F4_MMA_ENABLED)
     if (cute::elect_one_sync()) {
+      CUTE_LOG(
+        "F8TS: tmem_a: %u, tmem_c: %u, scaleC: %u\n", 
+        tmem_a, tmem_c, scaleC
+      );
       uint32_t mask[4] = {0, 0, 0, 0};
       asm volatile(
         "{\n\t"

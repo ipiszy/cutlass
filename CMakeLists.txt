@@ -444,7 +444,7 @@ if (NOT MSVC AND CUTLASS_NVCC_KEEP)
   set(CUTLASS_NVCC_KEEP_DIR ${CMAKE_CURRENT_BINARY_DIR}/tmp CACHE PATH "Location to store NVCC scratch files")
   file(MAKE_DIRECTORY ${CUTLASS_NVCC_KEEP_DIR})
   # list(APPEND CUTLASS_CUDA_NVCC_FLAGS --keep -v -objtemp -Xptxas=--warn-on-spills -Xptxas=--verbose -Xptxas=--warn-on-local-memory-usage --source-in-ptx --generate-line-info) # --keep-dir may not work with nvcc for some directories.
-  list(APPEND CUTLASS_CUDA_NVCC_FLAGS --keep -v -objtemp -Xptxas=--warn-on-spills -Xptxas=--verbose -Xptxas=--warn-on-local-memory-usage --generate-line-info) # --keep-dir may not work with nvcc for some directories.
+  list(APPEND CUTLASS_CUDA_NVCC_FLAGS --keep -v -objtemp -Xptxas=--warn-on-spills -Xptxas=--verbose -Xptxas=--warn-on-local-memory-usage -Xptxas=--g-tensor-memory-access-check --generate-line-info) # --keep-dir may not work with nvcc for some directories.
   list(APPEND CUTLASS_CUDA_CLANG_FLAGS -save-temps=${CUTLASS_NVCC_KEEP_DIR})
 endif()
 

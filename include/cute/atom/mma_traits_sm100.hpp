@@ -2802,9 +2802,9 @@ struct MMA_Traits<SM100_MMA_MXF8F6F4_TS<a_type, b_type, c_type, sf_type,
   constexpr static int K = 32;
   constexpr static int SFVecSize = 32;
 
-  using FrgTypeA = UMMA::tmem_frg_1sm<a_type>;
+  using FrgTypeA = UMMA::tmem_frg_1sm<a_type, a_type, UMMA::TmemAllocMode::NonInterleaved>;
   using FrgTypeB = UMMA::smem_desc<b_major>;
-  using FrgTypeC = UMMA::tmem_frg_1sm<c_type>;
+  using FrgTypeC = UMMA::tmem_frg_1sm<c_type, int32_t, UMMA::TmemAllocMode::NonInterleaved>;
   using FrgTypeSFA = UMMA::tmem_sf_frg<sf_type, SFVecSize, 1, true>;
   using FrgTypeSFB = UMMA::tmem_sf_frg<sf_type, SFVecSize, 1, false>;
 

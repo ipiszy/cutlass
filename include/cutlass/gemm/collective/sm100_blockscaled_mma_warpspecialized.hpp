@@ -1051,6 +1051,23 @@ struct CollectiveMma<
           thr_tCtSFA_s2t, tiled_copy_s2t_SFB,
           thr_tCsSFB_s2t, thr_tCtSFB_s2t] = mma_inputs;
 
+    if (threadIdx.x == 0 && threadIdx.y == 0 && threadIdx.z == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+      print("tCtSFA: \n");
+      print(tCtSFA);
+      print("\n");
+      printf("tCtSFA(_, _, 0): \n");
+      print(tCtSFA(_,_,0));
+      print("\n");
+      printf("tCtSFA(_, _, 1): \n");
+      print(tCtSFA(_,_,1));
+      print("\n");
+    } else {
+      unsigned long long start_clock = clock64();
+      while (clock64() - start_clock < 160000000) {
+          // Busy wait
+      }
+    }
+
     auto [mainloop_pipeline, accumulator_pipeline] = pipelines;
     auto [mainloop_pipe_consumer_state, accumulator_pipe_producer_state] = pipeline_states;
 
