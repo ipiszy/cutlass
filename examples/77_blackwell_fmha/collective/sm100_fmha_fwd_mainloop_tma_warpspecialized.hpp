@@ -170,14 +170,18 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     P1 = S1 + kSizeP,  // 160
     O0 = S1 + kSizeS,  // 256
     O1 = O0 + kSizeO,  // 384
-    SFQ0 = O1,  // SFQ0 is overlapped with O1
-    SFQ1 = O0,  // SFQ1 is overlapped with O0
-    SFK0 = kSizeSF + SFQ0,
-    SFK1 = kSizeSF + SFQ1,
-    SFP0 = kSizeSF + P0,
-    SFP1 = kSizeSF + P1,
-    SFV0 = kSizeSF + SFP0,
-    SFV1 = kSizeSF + SFP1,
+    SFQ0_PROLOGUE = O0,  // SFQ0 and SFK0 are allocated at O0 in prologue
+    SFQ1_PROLOGUE = O1,  // SFQ1 and SFK1 are allocated at O1 in prologue
+    SFK0_PROLOGUE = SFQ0_PROLOGUE + kSizeSF,
+    SFK1_PROLOGUE = SFQ1_PROLOGUE + kSizeSF,
+    SFQ0 = P1 + kSizeP,  // SFQ0 and SFK0 are allocated after P1
+    SFQ1 = P0 + kSizeP,  // SFQ1 and SFK1 are allocated after P0
+    SFK0 = SFQ0 + kSizeSF,
+    SFK1 = SFQ1 + kSizeSF,
+    SFP0 = P0 + kSizeP,  // SFP0 and SFV0 are allocated after P0
+    SFP1 = P1 + kSizeP,  // SFP1 and SFV1 are allocated after P1
+    SFV0 = SFP0 + kSizeSF,
+    SFV1 = SFP1 + kSizeSF,
     kEnd = 512,
   };
 
@@ -188,6 +192,19 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     kIdxFinalRowSum = 0,
     kIdxFinalRowMax = 1
   };
+
+#ifdef MXFP8
+  // TODO: Is there a pipeline to use to sync for tcgen05.ld?
+  enum class MXFwdNamedBarriers {
+    MMA_P0 = 0,
+    MMA_P1 = 1
+  }
+
+  // TODO: use constants defined in the Kernel definition file directly.
+  constexpr int NUM_SOFTMAX_WARPS = 4;
+  constexpr int NUM_MMA_WARPS = 1;
+  constexpr int NUM_THREADS_PER_WARP = 32;
+#endif
 
   // from load to mma warp, protects q in smem
   using PipelineQ = cutlass::PipelineTmaUmmaAsync<
@@ -409,20 +426,20 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 #ifdef MXFP8
     Tensor tCtSFQ0 = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFA>(
       typename CollectiveMmaQK::SmemLayoutAtomSFA{});
-    tCtSFQ0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ0);
+    tCtSFQ0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ0_PROLOGUE);
     Tensor tCtSFQ0_compact = make_tensor(tCtSFQ0.data(), filter_zeros(tCtSFQ0.layout()));
     Tensor tCtSFQ1 = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFA>(
       filter_zeros(typename CollectiveMmaQK::SmemLayoutAtomSFA{}));
-    tCtSFQ1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ1);
+    tCtSFQ1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ1_PROLOGUE);
     Tensor tCtSFQ1_compact = make_tensor(tCtSFQ1.data(), filter_zeros(tCtSFQ1.layout()));
 
     Tensor tCtSFK0 = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFB>(
       typename CollectiveMmaQK::SmemLayoutAtomSFB{});
-    tCtSFK0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK0);
+    tCtSFK0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK0_PROLOGUE);
     Tensor tCtSFK0_compact = make_tensor(tCtSFK0.data(), filter_zeros(tCtSFK0.layout()));
     Tensor tCtSFK1 = make_tensor<typename CollectiveMmaQK::TiledMma::FrgTypeSFB>(
       typename CollectiveMmaQK::SmemLayoutAtomSFB{});
-    tCtSFK1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK1);
+    tCtSFK1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK1_PROLOGUE);
     Tensor tCtSFK1_compact = make_tensor(tCtSFK1.data(), filter_zeros(tCtSFK1.layout()));
  
     Tensor tCtSFV0 = make_tensor<typename CollectiveMmaPV::TiledMma::FrgTypeSFB>(
@@ -600,6 +617,16 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     // gemm Q2 * K1 -> S2
 #ifdef MXFP8
     gemm_zero_acc(mma_qk, tSrQ1, tSrK(_,_,_,k_index), tStS1, tCtSFQ1, tCtSFK1);
+
+    // Reset SFQ0, SFK0, SFQ1, SFK1 TMEM pointers.
+    tCtSFQ0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ0);
+    tCtSFQ1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ1);
+    tCtSFK0.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK0);
+    tCtSFK1.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK1);
+    thr_tCtSFQ0_s2t.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ0);
+    thr_tCtSFQ1_s2t.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFQ1);
+    thr_tCtSFK0_s2t.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK0);
+    thr_tCtSFK1_s2t.data() = tmem_base_ptr + uint32_t(TmemAllocation::SFK1);
 #else
     gemm_zero_acc(mma_qk, tSrQ1, tSrK(_,_,_,k_index), tStS1);
 #endif
@@ -679,6 +706,9 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       pipeline_kv.consumer_wait(pipeline_kv_consumer_state);
       ++pipeline_kv_consumer_state;
 #ifdef MXFP8
+      cutlass::arch::NamedBarrier::sync(
+        (NUM_SOFTMAX_WARPS + NUM_MMA_WARPS) * NUM_THREADS_PER_WARP, 
+        static_cast<uint32_t>(MXFwdNamedBarriers::MMA_P1) /*id*/);
       if (cute::elect_one_sync()) {
         copy(tiled_copy_s2t_SFQ, thr_tCsSFQ_s2t(_,_,_,_,0), thr_tCtSFQ0_s2t);
         copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK0_s2t);
@@ -754,6 +784,9 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
       }
 
 #ifdef MXFP8
+      cutlass::arch::NamedBarrier::sync(
+        (NUM_SOFTMAX_WARPS + NUM_MMA_WARPS) * NUM_THREADS_PER_WARP, 
+        static_cast<uint32_t>(MXFwdNamedBarriers::MMA_P0) /*id*/);
       if (cute::elect_one_sync()) {
         copy(tiled_copy_s2t_SFQ, thr_tCsSFK_s2t(_,_,_,_,1), thr_tCtSFQ1_s2t);
         copy(tiled_copy_s2t_SFK, thr_tCsSFK_s2t(_,_,_,_,k_index), thr_tCtSFK1_s2t);
@@ -897,7 +930,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
   CUTLASS_DEVICE auto
   softmax_step(
       float& row_max, float& row_sum,
-      Stage stage, bool final_call,
+      Stage stage, bool first_call, bool final_call,
       BlkCoord const& blk_coord, CountingTensor const& cS,
       Params const& params, ProblemShape const& problem_shape,
       PipelineS& pipeline_s, typename PipelineS::PipelineState& pipeline_s_consumer_state,
@@ -953,6 +986,23 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     // read all of S from tmem into reg mem
     Tensor tTMEM_LOADrS = make_tensor<ElementQK>(shape(tTMEM_LOADcS));
     copy(tiled_tmem_load, tTMEM_LOADtS, tTMEM_LOADrS);
+#ifdef MXFP8
+    if (constexpr stage == _0{}) {
+      if (!first_call) {
+        cutlass::arch::fence_view_async_tmem_load();
+        cutlass::arch::NamedBarrier::arrive(
+          (NUM_SOFTMAX_WARPS + NUM_MMA_WARPS) * NUM_THREADS_PER_WARP, 
+          static_cast<uint32_t>(MXFwdNamedBarriers::MMA_P0) /*id*/);
+      }
+    } else {
+      if (!final_call) {
+        cutlass::arch::fence_view_async_tmem_load();
+        cutlass::arch::NamedBarrier::arrive(
+          (NUM_SOFTMAX_WARPS + NUM_MMA_WARPS) * NUM_THREADS_PER_WARP, 
+          static_cast<uint32_t>(MXFwdNamedBarriers::MMA_P1) /*id*/);
+      }
+    }
+#endif
 
     if constexpr (need_apply_mask) {
       Mask{}.apply_mask(tTMEM_LOADrS, tTMEM_LOADcS, problem_shape);
@@ -1268,10 +1318,12 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
 
     pipeline_c.producer_acquire(pipeline_c_producer_state);
 
+    bool first_call = true;
     CUTLASS_PRAGMA_NO_UNROLL
     for (; mask_tile_count > 0; mask_tile_count -= 1) {
       softmax_step<false /* need_apply_mask */>(
           row_max, row_sum, stage,
+          first_call,
           (mask_tile_count == 1) &&
               (Mask{}.get_masked_trip_count(blk_coord, TileShape{}, problem_shape) == 0),
           blk_coord, cS, params, problem_shape,
@@ -1280,6 +1332,7 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
           order_s, storage
       );
 
+      first_call = false;
       cS.data() = cS.data() + E<1>{} * get<1>(ThreadShape{}) * get<1>(TileShapeQK{});
     }
 
@@ -1289,13 +1342,14 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
     CUTLASS_PRAGMA_NO_UNROLL
     for (; mask_tile_count > 0; mask_tile_count -= 1) {
       softmax_step<true /* need_apply_mask */>(
-          row_max, row_sum, stage, mask_tile_count == 1,
+          row_max, row_sum, stage, first_call, mask_tile_count == 1,
           blk_coord, cS, params, problem_shape,
           pipeline_s, pipeline_s_consumer_state,
           pipeline_c, pipeline_c_producer_state,
           order_s, storage
       );
 
+      first_call = false;
       cS.data() = cS.data() + E<1>{} * get<1>(ThreadShape{}) * get<1>(TileShapeQK{});
     }
 
